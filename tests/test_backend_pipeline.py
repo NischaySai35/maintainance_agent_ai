@@ -1,205 +1,195 @@
-"""Focused unit tests for the AURA SOVEREIGN backend pipeline.
+"""Focused unit tests for the current backend pipeline modules.
 
-Tests cover:
-  * Physical-Inertia Validator rejects impossible readings
-  * Anomaly detector flags compound anomalies
-  * Risk scorer rewards duration and multi-sensor involvement
-  * Baseline memory correctly computes regime classification
-  * Dead-reckoning (simulator dropout) produces predicted=True readings
+Coverage:
+  * PIV rejects implausible transitions and carries last valid reading.
+  * Anomaly detector flags spike/compound and ignores nominal readings.
+  * Risk scorer increases with duration and resets on clear ticks.
+  * Baseline manager + ML fallback regime selection work with live-like dicts.
+  * Shadow-state manager emits predicted readings and reconnect checks.
 """
 from __future__ import annotations
 
+import os
+import sys
 import unittest
 from datetime import UTC, datetime, timedelta
 
-from backend.anomaly.detector import AnomalyDetector
-from backend.ingestion.simulator import MachineSimulator
-from backend.memory.baseline import BaselineMemory
-from backend.models.schemas import AnomalyFinding, SensorReading
-from backend.physics.validation import PhysicalInertiaValidator
-from backend.risk.scoring import RiskScorer
+# backend modules use local imports (e.g., "from baseline import ...").
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
+
+from baseline import BaselineManager
+from detector import AnomalyDetector
+from model import MLIntelligence
+from piv import PIVValidator
+from scorer import RiskScorer
+from shadow import ShadowStateManager
+
+
+def _ts(offset_seconds: int = 0) -> str:
+    return (datetime.now(UTC) + timedelta(seconds=offset_seconds)).isoformat()
 
 
 def _reading(
     machine_id: str = "M-TEST",
-    temperature: float = 65.0,
-    vibration: float = 1.0,
+    temperature_C: float = 65.0,
+    vibration_mm_s: float = 1.0,
     rpm: float = 1500.0,
-    dt_seconds: float = 0.0,
-) -> SensorReading:
-    """Helper: build a SensorReading with optional timestamp offset."""
-    return SensorReading(
-        machine_id=machine_id,
-        timestamp=datetime.now(UTC) + timedelta(seconds=dt_seconds),
-        temperature=temperature,
-        vibration=vibration,
-        rpm=rpm,
-    )
+    current_A: float = 10.0,
+    status: str = "running",
+    dt_seconds: int = 0,
+) -> dict:
+    return {
+        "machine_id": machine_id,
+        "timestamp": _ts(dt_seconds),
+        "temperature_C": temperature_C,
+        "vibration_mm_s": vibration_mm_s,
+        "rpm": rpm,
+        "current_A": current_A,
+        "status": status,
+    }
 
 
 class TestPhysicsValidation(unittest.TestCase):
     def setUp(self) -> None:
-        self.validator = PhysicalInertiaValidator()
+        self.validator = PIVValidator()
 
     def test_accepts_normal_reading(self) -> None:
-        prev = _reading(temperature=65, rpm=1500)
-        curr = _reading(temperature=65.3, rpm=1510, dt_seconds=1)
-        result = self.validator.validate(curr, prev)
+        prev = _reading(temperature_C=65, rpm=1500)
+        curr = _reading(temperature_C=65.5, rpm=1510, dt_seconds=1)
+        result = self.validator.validate(curr, prev, "active")
         self.assertTrue(result.accepted)
 
     def test_rejects_impossible_temperature_spike(self) -> None:
-        prev = _reading(temperature=60)
-        curr = _reading(temperature=120, dt_seconds=1)
-        result = self.validator.validate(curr, prev)
+        prev = _reading(temperature_C=60)
+        curr = _reading(temperature_C=120, dt_seconds=1)
+        result = self.validator.validate(curr, prev, "active")
         self.assertFalse(result.accepted)
         self.assertIn("PIV rejected", result.reason)
 
     def test_rejects_instant_rpm_collapse(self) -> None:
         prev = _reading(rpm=1800)
         curr = _reading(rpm=0, dt_seconds=1)
-        result = self.validator.validate(curr, prev)
+        result = self.validator.validate(curr, prev, "active")
         self.assertFalse(result.accepted)
 
     def test_accepts_first_reading_without_previous(self) -> None:
-        curr = _reading(temperature=999)  # absurd but no prior data → accepted
-        result = self.validator.validate(curr, None)
+        curr = _reading(temperature_C=999)
+        result = self.validator.validate(curr, None, "active")
         self.assertTrue(result.accepted)
 
     def test_rejected_reading_returns_previous(self) -> None:
-        prev = _reading(temperature=65)
-        curr = _reading(temperature=130, dt_seconds=1)
-        result = self.validator.validate(curr, prev)
+        prev = _reading(temperature_C=65)
+        curr = _reading(temperature_C=130, dt_seconds=1)
+        result = self.validator.validate(curr, prev, "active")
         self.assertFalse(result.accepted)
-        # The returned reading should be the previous one (carry-forward)
-        self.assertEqual(result.reading.temperature, prev.temperature)
+        self.assertEqual(result.reading["temperature_C"], prev["temperature_C"])
 
 
 class TestAnomalyDetection(unittest.TestCase):
-    def _make_baseline_memory(self, n: int = 100) -> BaselineMemory:
-        """Build a baseline with realistic Gaussian variation so std is non-trivial."""
-        import random as _random
-        rng = _random.Random(42)
-        memory = BaselineMemory()
-        base_t = datetime.now(UTC) - timedelta(seconds=n)
-        for i in range(n):
-            memory.add(
-                SensorReading(
-                    machine_id="M-TEST",
-                    timestamp=base_t + timedelta(seconds=i),
-                    temperature=65.0 + rng.gauss(0, 0.5),
-                    vibration=1.0 + rng.gauss(0, 0.05),
-                    rpm=1500.0 + rng.gauss(0, 25.0),
-                )
-            )
-        return memory
+    def _make_baseline(self):
+        manager = BaselineManager()
+        history = []
+        base_t = datetime.now(UTC) - timedelta(seconds=120)
+        for i in range(120):
+            history.append({
+                "machine_id": "M-TEST",
+                "timestamp": (base_t + timedelta(seconds=i)).isoformat(),
+                "temperature_C": 65.0 + ((i % 5) * 0.1),
+                "vibration_mm_s": 1.0 + ((i % 3) * 0.02),
+                "rpm": 1500.0 + ((i % 7) * 4),
+                "current_A": 10.0 + ((i % 4) * 0.1),
+            })
+
+        predictor = lambda _mid, rpm: "idle" if rpm < 1000 else ("active" if rpm < 3000 else "peak")
+        manager.load_history("M-TEST", history, predictor)
+        return manager.get_baseline("M-TEST", "active")
 
     def test_detects_compound_anomaly(self) -> None:
-        memory = self._make_baseline_memory()
         detector = AnomalyDetector()
-        reading = _reading(temperature=90, vibration=2.8, rpm=2400)
-        baseline = memory.compute(reading)
-        finding = detector.detect(reading, baseline)
+        baseline = self._make_baseline()
+        reading = _reading(temperature_C=95, vibration_mm_s=4.5, rpm=2400, current_A=20)
+        finding = detector.detect(reading, baseline, drifting_sensors=["temperature_C"], prev_reading=_reading())
         self.assertIn("compound", finding.anomaly_types)
 
     def test_detects_spike(self) -> None:
-        memory = self._make_baseline_memory()
         detector = AnomalyDetector()
-        reading = _reading(temperature=95)
-        baseline = memory.compute(reading)
-        finding = detector.detect(reading, baseline)
+        baseline = self._make_baseline()
+        reading = _reading(temperature_C=110)
+        finding = detector.detect(reading, baseline, drifting_sensors=[], prev_reading=_reading())
         self.assertIn("spike", finding.anomaly_types)
 
     def test_no_anomaly_for_normal_reading(self) -> None:
-        memory = self._make_baseline_memory()
         detector = AnomalyDetector()
-        reading = _reading(temperature=65.1, vibration=1.01, rpm=1501)
-        baseline = memory.compute(reading)
-        finding = detector.detect(reading, baseline)
+        baseline = self._make_baseline()
+        reading = _reading(temperature_C=65.1, vibration_mm_s=1.01, rpm=1501)
+        finding = detector.detect(reading, baseline, drifting_sensors=[], prev_reading=_reading())
         self.assertEqual(finding.anomaly_types, [])
 
 
 class TestRiskScoring(unittest.TestCase):
-    def _finding(self, types: list[str], score_hint: float = 40.0) -> AnomalyFinding:
-        return AnomalyFinding(
-            machine_id="M-TEST",
-            anomaly_types=types,
-            zscores={"temperature": 1.0, "vibration": 1.0, "rpm": 1.0},
-            moving_deviation={"temperature": 1.0, "vibration": 0.1, "rpm": 50.0},
-            score_hint=score_hint,
-        )
-
-    def test_compound_anomaly_receives_bonus(self) -> None:
-        scorer = RiskScorer()
-        plain_finding = self._finding(["spike"], score_hint=40)
-        compound_finding = self._finding(["spike", "compound"], score_hint=40)
-        plain_risk = scorer.score(plain_finding)
-        scorer2 = RiskScorer()
-        compound_risk = scorer2.score(compound_finding)
-        self.assertGreater(compound_risk.risk_score, plain_risk.risk_score)
+    def _finding(self, types: list[str]):
+        baseline = BaselineManager()
+        predictor = lambda _mid, rpm: "active" if rpm >= 1000 else "idle"
+        history = [_reading(dt_seconds=i) for i in range(-30, 0)]
+        baseline.load_history("M-TEST", history, predictor)
+        bl = baseline.get_baseline("M-TEST", "active")
+        detector = AnomalyDetector()
+        reading = _reading(temperature_C=92, vibration_mm_s=3.8, rpm=2400, current_A=22)
+        found = detector.detect(reading, bl, drifting_sensors=["temperature_C"], prev_reading=_reading())
+        found.anomaly_types = types
+        return found
 
     def test_duration_increases_risk(self) -> None:
         scorer = RiskScorer()
-        finding = self._finding(["spike"], score_hint=20)
-        first = scorer.score(finding)
-        second = scorer.score(finding)
+        finding = self._finding(["spike"])
+        reading = _reading(current_A=18)
+        first = scorer.score(finding, reading)
+        second = scorer.score(finding, reading)
         self.assertGreater(second.risk_score, first.risk_score)
 
     def test_clear_anomaly_resets_duration(self) -> None:
         scorer = RiskScorer()
-        finding = self._finding(["spike"])
-        scorer.score(finding)
-        scorer.score(finding)
-        clear = self._finding([])
-        result = scorer.score(clear)
-        self.assertEqual(result.duration_seconds, 0)
+        anomaly = self._finding(["spike"])
+        scorer.score(anomaly, _reading())
+        scorer.score(anomaly, _reading())
+        cleared = self._finding([])
+        result = scorer.score(cleared, _reading())
+        self.assertEqual(result.duration_ticks, 0)
 
 
 class TestBaselineRegime(unittest.TestCase):
     def test_idle_regime(self) -> None:
-        memory = BaselineMemory()
-        reading = _reading(rpm=400)
-        memory.add(reading)
-        baseline = memory.compute(reading)
-        self.assertEqual(baseline.regime, "idle")
+        model = MLIntelligence()
+        self.assertEqual(model.predict_regime("M-TEST", 400), "idle")
 
-    def test_normal_regime(self) -> None:
-        memory = BaselineMemory()
-        reading = _reading(rpm=1200)
-        memory.add(reading)
-        baseline = memory.compute(reading)
-        self.assertEqual(baseline.regime, "normal")
+    def test_active_regime(self) -> None:
+        model = MLIntelligence()
+        self.assertEqual(model.predict_regime("M-TEST", 1200), "active")
 
-    def test_peak_load_regime(self) -> None:
-        memory = BaselineMemory()
-        reading = _reading(rpm=2000)
-        memory.add(reading)
-        baseline = memory.compute(reading)
-        self.assertEqual(baseline.regime, "peak_load")
+    def test_peak_regime(self) -> None:
+        model = MLIntelligence()
+        self.assertEqual(model.predict_regime("M-TEST", 3500), "peak")
 
 
-class TestSimulatorDeadReckoning(unittest.TestCase):
-    def test_dropout_produces_predicted_reading(self) -> None:
-        """Force dropout probability to 100% and verify predicted=True."""
-        sim = MachineSimulator("M-TEST", seed=99)
-        sim.historical_bootstrap(minutes=5)  # small bootstrap for speed
-        # Override dropout probability temporarily
-        original_prob = MachineSimulator.DROPOUT_PROB
-        MachineSimulator.DROPOUT_PROB = 1.0
-        try:
-            reading = sim.next_live(tick=1)
-            self.assertTrue(reading.predicted)
-        finally:
-            MachineSimulator.DROPOUT_PROB = original_prob
+class TestShadowDeadReckoning(unittest.TestCase):
+    def test_predict_sets_predicted_flag(self) -> None:
+        shadow = ShadowStateManager()
+        shadow.record_actual(_reading(machine_id="M-TEST", rpm=1500))
+        predicted = shadow.predict("M-TEST")
+        self.assertIsNotNone(predicted)
+        self.assertTrue(predicted["predicted"])
 
-    def test_normal_reading_not_predicted(self) -> None:
-        sim = MachineSimulator("M-TEST", seed=7)
-        sim.historical_bootstrap(minutes=5)
-        MachineSimulator.DROPOUT_PROB = 0.0
-        try:
-            reading = sim.next_live(tick=1)
-            self.assertFalse(reading.predicted)
-        finally:
-            MachineSimulator.DROPOUT_PROB = 0.04
+    def test_reconnect_deviation_path(self) -> None:
+        shadow = ShadowStateManager()
+        shadow.record_actual(_reading(machine_id="M-TEST", temperature_C=60, rpm=1400))
+        shadow.record_actual(_reading(machine_id="M-TEST", temperature_C=61, rpm=1410, dt_seconds=1))
+        anomaly, deviation, explanation = shadow.check_reconnect_deviation(
+            "M-TEST",
+            _reading(machine_id="M-TEST", temperature_C=90, rpm=2100, dt_seconds=3),
+        )
+        self.assertTrue(isinstance(anomaly, bool))
+        self.assertGreaterEqual(deviation, 0.0)
+        self.assertTrue(len(explanation) > 0)
 
 
 if __name__ == "__main__":

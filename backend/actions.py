@@ -19,6 +19,7 @@ required on any platform.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
@@ -33,7 +34,7 @@ THRESHOLD_ALERT:       float = 40.0
 THRESHOLD_MAINTENANCE: float = 70.0
 
 # Simulation server base URL
-SIM_BASE_URL: str = "http://localhost:3000"
+SIM_BASE_URL: str = os.getenv("SIM_BASE_URL", "http://localhost:3000")
 
 
 class ActionLayer:
@@ -159,7 +160,7 @@ class ActionLayer:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.post(url, json=payload)
             log.info(
-                "[Actions] POST /alert → %d | %s | risk=%.1f",
+                "[Actions] POST /alert -> %d | %s | risk=%.1f",
                 resp.status_code,
                 payload.get("machine_id"),
                 payload.get("risk_score", 0),
@@ -179,7 +180,7 @@ class ActionLayer:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.post(url, json=payload)
             log.info(
-                "[Actions] POST /schedule-maintenance → %d | %s | risk=%.1f",
+                "[Actions] POST /schedule-maintenance -> %d | %s | risk=%.1f",
                 resp.status_code,
                 payload.get("machine_id"),
                 payload.get("risk_score", 0),
