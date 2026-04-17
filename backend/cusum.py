@@ -20,7 +20,7 @@ class CusumDetector:
         self.S: Dict[str, Dict[str, float]] = {}
         # Thresholds: self.thresholds[machine_id][sensor] = float
         self.thresholds: Dict[str, Dict[str, float]] = {}
-        self.k: float = 0.5  # shift magnitude parameter
+        self.k: float = 1.5  # shift magnitude parameter: requires z > 1.5 to accumulate drift
 
     def calculate_historical_thresholds(
         self, 
