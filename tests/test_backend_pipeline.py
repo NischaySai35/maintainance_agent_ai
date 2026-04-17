@@ -179,7 +179,7 @@ class TestBaselineRegime(unittest.TestCase):
 
 class TestSimulatorDeadReckoning(unittest.TestCase):
     def test_dropout_produces_predicted_reading(self) -> None:
-        """Force dropout probability to 100 % and verify predicted=True."""
+        """Force dropout probability to 100% and verify predicted=True."""
         sim = MachineSimulator("M-TEST", seed=99)
         sim.historical_bootstrap(minutes=5)  # small bootstrap for speed
         # Override dropout probability temporarily

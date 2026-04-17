@@ -50,8 +50,14 @@ function StateDot({ position, isOutlier }: DotProps) {
   );
 }
 
+interface AxisProps {
+  start: [number, number, number];
+  end: [number, number, number];
+  color: string;
+}
+
 /** Thin axis line helper — uses primitive to avoid JSX/SVG <line> ambiguity */
-function Axis({ start, end, color }: { start: [number, number, number]; end: [number, number, number]; color: string }) {
+function Axis({ start, end, color }: AxisProps) {
   const points = [new THREE.Vector3(...start), new THREE.Vector3(...end)];
   const geo = new THREE.BufferGeometry().setFromPoints(points);
   const mat = new THREE.LineBasicMaterial({ color, opacity: 0.4, transparent: true });
