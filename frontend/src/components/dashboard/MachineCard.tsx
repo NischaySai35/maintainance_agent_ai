@@ -26,13 +26,13 @@ const MachineCard = ({ machine, reading, sparkline, isSelected, onClick }: Machi
   return (
     <button
       onClick={onClick}
-      className={`w-full text-left rounded-xl p-4 border transition-all duration-200 cursor-pointer group ${
+      className={`w-full text-left rounded-xl p-5 border transition-all duration-200 cursor-pointer group ${
         isSelected
           ? 'bg-cyan-500/[0.08] border-cyan-500/40 shadow-[0_0_20px_rgba(0,217,255,0.05)]'
           : 'bg-transparent border-transparent hover:bg-white/[0.03] hover:border-slate-800'
       }`}
     >
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-4">
         {/* Status indicator */}
         <div className="relative flex-shrink-0">
           <div
@@ -62,7 +62,7 @@ const MachineCard = ({ machine, reading, sparkline, isSelected, onClick }: Machi
       </div>
 
       {/* Analytics Visualization */}
-      <div className="h-10 mt-3 -mx-2 opacity-60 group-hover:opacity-100 transition-opacity">
+      <div className="h-11 mt-4 -mx-1 opacity-60 group-hover:opacity-100 transition-opacity">
         {isBrowser ? (
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={sparkline}>
@@ -83,7 +83,7 @@ const MachineCard = ({ machine, reading, sparkline, isSelected, onClick }: Machi
       </div>
 
       {/* Standardized Metric Row */}
-      <div className="grid grid-cols-3 gap-2 mt-2 border-t border-white/[0.04] pt-2">
+      <div className="grid grid-cols-3 gap-3 mt-3 border-t border-white/[0.04] pt-3">
         <div className="flex flex-col">
           <span className="text-[8px] text-slate-600 uppercase tracking-tighter">Temp</span>
           <span className="text-[10px] font-mono text-slate-400 font-bold tabular-nums">

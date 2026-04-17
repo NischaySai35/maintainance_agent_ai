@@ -320,6 +320,7 @@ function DiagSphere({ signals }: { signals: SphereSignals }) {
 
     const mat = new THREE.ShaderMaterial({ vertexShader: VERT, fragmentShader: FRAG, transparent: true, depthWrite: false });
     const mesh = new THREE.Points(geo, mat);
+    mesh.scale.setScalar(1.89);
     scene.add(mesh);
 
     const waves: Wave[] = [makeHeartbeatWave()];
@@ -369,8 +370,8 @@ function DiagSphere({ signals }: { signals: SphereSignals }) {
 
       mesh.rotation.y = t * (0.15 + cur.nRpm * 0.52);
       mesh.rotation.x = Math.sin(t * 0.09) * 0.11;
-      mesh.position.x = Math.sin(t * 41.0) * cur.nVib * 0.022;
-      mesh.position.y = Math.sin(t * 37.0 + 1.3) * cur.nVib * 0.022;
+      mesh.position.x = 0;
+      mesh.position.y = 0;
 
       for (let i = 0; i < N; i += 1) {
         const bx = base[i * 3];
@@ -549,110 +550,76 @@ export default function EntropySphere({ reading }: EntropySphereProps) {
         ].join(','),
       }} />
 
-      <div style={{ position: 'absolute', inset: 0 }}>
+      <div style={{ position: 'absolute', inset: 0, transform: 'translate(6%, -10%)' }}>
         <DiagSphere signals={signals} />
       </div>
 
-      {/* TOP HUD: 3 CARDS ABOVE SPHERE */}
-      <div style={{ position: 'absolute', top: 16, left: 0, right: 0, zIndex: 20, padding: '0 20px' }}>
+      <div style={{ position: 'absolute', inset: 0, zIndex: 20, padding: 20 }}>
         <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-          gap: 12,
-          maxWidth: 700,
-          margin: '0 auto',
+          position: 'absolute', left: 20, top: 20,
+          display: 'flex', flexDirection: 'column', gap: 14,
+          width: 'min(230px, 28%)',
         }}>
           <MetricCard metricKey="temp" ms={live.temp} />
           <MetricCard metricKey="vib" ms={live.vib} />
           <MetricCard metricKey="rpm" ms={live.rpm} />
-        </div>
-      </div>
-
-      {/* LEFT HUD: 1 CARD */}
-      <div style={{
-        position: 'absolute', left: 20, top: '60%', transform: 'translateY(-50%)',
-        zIndex: 20,
-      }}>
-        <MetricCard metricKey="current" ms={live.current} />
-      </div>
-
-      {/* RIGHT HUD: 1 CARD + SYSTEM STATUS */}
-      <div style={{
-        position: 'absolute', right: 20, top: '60%', transform: 'translateY(-50%)',
-        zIndex: 20, display: 'flex', flexDirection: 'column', gap: 12,
-      }}>
-        <div style={{
-          borderRadius: 14, border: `1px solid ${ms.border}`,
-          background: ms.bg, backdropFilter: 'blur(16px)',
-          padding: '14px 16px', textAlign: 'center', minWidth: 108, transition: 'all 0.6s',
-        }}>
-          <div style={{ fontSize: 8, letterSpacing: '0.22em', color: ms.text, opacity: 0.7 }}>SYSTEM MODE</div>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, marginTop: 9 }}>
-            <span style={{ width: 7, height: 7, borderRadius: '50%', background: ms.dot, boxShadow: `0 0 8px ${ms.dot}` }} />
-            <span style={{ fontSize: 14, fontWeight: 700, color: ms.text, letterSpacing: '0.08em' }}>
-              {live.mode.toUpperCase()}
-            </span>
-          </div>
+          <MetricCard metricKey="current" ms={live.current} />
         </div>
 
         <div style={{
-          borderRadius: 14, border: '1px solid rgba(255,255,255,0.09)',
-          background: 'rgba(5,10,25,0.72)', backdropFilter: 'blur(14px)',
-          padding: '12px 14px', minWidth: 108,
+          position: 'absolute', right: 20, top: '50%', transform: 'translateY(-50%)',
+          display: 'flex', flexDirection: 'column', gap: 12, zIndex: 20,
         }}>
-          <div style={{ fontSize: 8, letterSpacing: '0.22em', color: 'rgba(148,163,184,0.7)', marginBottom: 10 }}>
-            SEVERITY
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <div style={{ width: 6, height: 56, borderRadius: 3, background: 'rgba(255,255,255,0.07)', position: 'relative', overflow: 'hidden' }}>
-              <div style={{
-                position: 'absolute', bottom: 0, left: 0, right: 0,
-                height: `${sevPct}%`,
-                background: live.severity > 0.66 ? '#f43f5e' : live.severity > 0.33 ? '#f59e0b' : '#34d368',
-                borderRadius: 3, transition: 'height 0.8s ease, background 0.6s ease',
-              }} />
-            </div>
-            <div>
-              <div style={{ fontSize: 20, fontWeight: 700, color: ms.text, lineHeight: 1 }}>{sevPct}</div>
-              <div style={{ fontSize: 9, color: 'rgba(148,163,184,0.6)', marginTop: 3 }}>%</div>
-            </div>
-          </div>
-        </div>
-
-        <div style={{
-          borderRadius: 14, border: '1px solid rgba(255,255,255,0.07)',
-          background: 'rgba(5,10,25,0.72)', backdropFilter: 'blur(14px)',
-          padding: '10px 14px', textAlign: 'center',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
-            <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#34d368', animation: 'blink 1.4s infinite', flexShrink: 0 }} />
-            <span style={{ fontSize: 9, letterSpacing: '0.18em', color: 'rgba(148,163,184,0.7)' }}>LIVE</span>
-          </div>
-          <div style={{ fontSize: 9, color: 'rgba(148,163,184,0.4)', marginTop: 4 }}>
-            {secAgo}s ago
-          </div>
-        </div>
-      </div>
-
-      <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 20, padding: '0 20px 16px' }}>
-        <div style={{ maxWidth: 620, margin: '0 auto' }}>
           <div style={{
-            borderRadius: 14, border: '1px solid rgba(255,255,255,0.08)',
-            background: 'rgba(5,10,25,0.72)', backdropFilter: 'blur(14px)',
-            padding: '10px 14px',
-            display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '6px 12px',
+            borderRadius: 14, border: `1px solid ${ms.border}`,
+            background: ms.bg, backdropFilter: 'blur(16px)',
+            padding: '14px 16px', textAlign: 'center', minWidth: 120, transition: 'all 0.6s',
           }}>
-            {(['temp', 'vib', 'rpm', 'current'] as MetricKey[]).map(k => {
-              const cfg = METRIC_CONFIG[k];
-              return (
-                <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <div style={{ width: 5, height: 5, borderRadius: '50%', background: cfg.accent, flexShrink: 0 }} />
-                  <span style={{ fontSize: 9, color: 'rgba(148,163,184,0.65)', letterSpacing: '0.02em' }}>
-                    {cfg.label} warn {cfg.warningMax}{cfg.unit} crit {cfg.criticalMax}{cfg.unit}
-                  </span>
-                </div>
-              );
-            })}
+            <div style={{ fontSize: 8, letterSpacing: '0.22em', color: ms.text, opacity: 0.7 }}>SYSTEM MODE</div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, marginTop: 9 }}>
+              <span style={{ width: 7, height: 7, borderRadius: '50%', background: ms.dot, boxShadow: `0 0 8px ${ms.dot}` }} />
+              <span style={{ fontSize: 14, fontWeight: 700, color: ms.text, letterSpacing: '0.08em' }}>
+                {live.mode.toUpperCase()}
+              </span>
+            </div>
+          </div>
+
+          <div style={{
+            borderRadius: 14, border: '1px solid rgba(255,255,255,0.09)',
+            background: 'rgba(5,10,25,0.72)', backdropFilter: 'blur(14px)',
+            padding: '12px 14px', minWidth: 120,
+          }}>
+            <div style={{ fontSize: 8, letterSpacing: '0.22em', color: 'rgba(148,163,184,0.7)', marginBottom: 10 }}>
+              SEVERITY
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ width: 6, height: 56, borderRadius: 3, background: 'rgba(255,255,255,0.07)', position: 'relative', overflow: 'hidden' }}>
+                <div style={{
+                  position: 'absolute', bottom: 0, left: 0, right: 0,
+                  height: `${sevPct}%`,
+                  background: live.severity > 0.66 ? '#f43f5e' : live.severity > 0.33 ? '#f59e0b' : '#34d368',
+                  borderRadius: 3, transition: 'height 0.8s ease, background 0.6s ease',
+                }} />
+              </div>
+              <div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: ms.text, lineHeight: 1 }}>{sevPct}</div>
+                <div style={{ fontSize: 9, color: 'rgba(148,163,184,0.6)', marginTop: 3 }}>%</div>
+              </div>
+            </div>
+          </div>
+
+          <div style={{
+            borderRadius: 14, border: '1px solid rgba(255,255,255,0.07)',
+            background: 'rgba(5,10,25,0.72)', backdropFilter: 'blur(14px)',
+            padding: '10px 14px', textAlign: 'center',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
+              <span style={{ width: 5, height: 5, borderRadius: '50%', background: '#34d368', animation: 'blink 1.4s infinite', flexShrink: 0 }} />
+              <span style={{ fontSize: 9, letterSpacing: '0.18em', color: 'rgba(148,163,184,0.7)' }}>LIVE</span>
+            </div>
+            <div style={{ fontSize: 9, color: 'rgba(148,163,184,0.4)', marginTop: 4 }}>
+              {secAgo}s ago
+            </div>
           </div>
         </div>
       </div>

@@ -59,18 +59,18 @@ export default function DashboardPage() {
 
   return (
     <div className="p-6 max-w-[1920px] mx-auto h-[calc(100vh-64px)] overflow-hidden">
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 h-full">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 h-full">
 
         {/* ─── LEFT SIDEBAR: Fleet Monitoring ─── */}
         <aside className="lg:col-span-3 flex flex-col min-h-0">
           <div className="card flex flex-col h-full overflow-hidden">
-            <div className="card-header flex-shrink-0">
+            <div className="card-header flex-shrink-0 px-5 py-4">
               <h2 className="text-[11px] font-bold text-white uppercase tracking-[2px]">Fleet Intelligence</h2>
               <span className="text-[10px] text-slate-500 font-mono">{MACHINES.length} Nodes Online</span>
             </div>
 
             {/* Search */}
-            <div className="px-4 py-3 border-b border-white/[0.04] flex-shrink-0">
+            <div className="px-5 py-4 border-b border-white/[0.04] flex-shrink-0">
               <div className="relative">
                 <Search className="w-3.5 h-3.5 text-slate-600 absolute left-3.5 top-1/2 -translate-y-1/2" />
                 <input
@@ -84,7 +84,7 @@ export default function DashboardPage() {
             </div>
 
             {/* Machine list */}
-            <div className="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar">
+            <div className="flex-1 overflow-y-auto px-4 py-4 space-y-3 custom-scrollbar">
               {filteredMachines.map(machine => (
                 <MachineCard
                   key={machine.id}
@@ -118,7 +118,7 @@ export default function DashboardPage() {
                   />
                 ),
                 entropy: (
-                  <div className="h-[460px]">
+                  <div className="h-[560px]">
                     <EntropySphere reading={readings[selectedMachine]} />
                   </div>
                 ),
@@ -131,12 +131,12 @@ export default function DashboardPage() {
         </section>
 
         {/* ─── RIGHT SIDEBAR: Agentic Ops & Actions ─── */}
-        <aside className="lg:col-span-3 flex flex-col gap-6 min-h-0 overflow-y-auto custom-scrollbar pl-1">
+        <aside className="lg:col-span-3 flex flex-col gap-5 min-h-0 overflow-y-auto custom-scrollbar pl-1">
           {/* Live Alerts */}
           <LiveAlerts alerts={alerts} maxItems={4} />
 
           {/* AI War Room */}
-          <div className="h-[320px] flex-shrink-0">
+          <div className="h-[360px] flex-shrink-0">
             <WarRoomConsole messages={agentMessages} />
           </div>
 
