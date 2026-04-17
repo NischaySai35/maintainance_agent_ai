@@ -24,7 +24,10 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Dict
 
-from detector import AnomalyResult
+try:
+    from .detector import AnomalyResult
+except ImportError:
+    from detector import AnomalyResult
 
 log = logging.getLogger("aura.scorer")
 

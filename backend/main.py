@@ -16,22 +16,40 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from actions  import ActionLayer
-from agent    import LLMExplainer
-from baseline import BaselineManager
-from detector import AnomalyDetector
-from ingestor import start_all_ingestion
-from piv      import PIVValidator
-from shadow   import ShadowStateManager
-from cusum    import CusumDetector
-from model    import MLIntelligence
-from state    import (
-    AppState,
-    MACHINE_IDS,
-    MACHINE_TYPE,
-    SIM_BASE_URL,
-    app_state,
-)
+try:
+    from .actions import ActionLayer
+    from .agent import LLMExplainer
+    from .baseline import BaselineManager
+    from .detector import AnomalyDetector
+    from .ingestor import start_all_ingestion
+    from .piv import PIVValidator
+    from .shadow import ShadowStateManager
+    from .cusum import CusumDetector
+    from .model import MLIntelligence
+    from .state import (
+        AppState,
+        MACHINE_IDS,
+        MACHINE_TYPE,
+        SIM_BASE_URL,
+        app_state,
+    )
+except ImportError:
+    from actions import ActionLayer
+    from agent import LLMExplainer
+    from baseline import BaselineManager
+    from detector import AnomalyDetector
+    from ingestor import start_all_ingestion
+    from piv import PIVValidator
+    from shadow import ShadowStateManager
+    from cusum import CusumDetector
+    from model import MLIntelligence
+    from state import (
+        AppState,
+        MACHINE_IDS,
+        MACHINE_TYPE,
+        SIM_BASE_URL,
+        app_state,
+    )
 
 logging.basicConfig(
     stream  = sys.stdout,
@@ -53,6 +71,10 @@ class ScheduleRequest(BaseModel):
     reason:     str
 
 async def _fetch_history(machine_id: str, client: httpx.AsyncClient) -> list[dict]:
+    if not SIM_BASE_URL:
+        log.info("[Bootstrap] %s — synthetic-only mode, skipping /history fetch", machine_id)
+        return []
+
     url = f"{SIM_BASE_URL}/history/{machine_id}"
     try:
         resp = await client.get(url)
@@ -68,11 +90,17 @@ async def _fetch_history(machine_id: str, client: httpx.AsyncClient) -> list[dic
         return []
 
 async def _bootstrap(app: AppState) -> None:
-    log.info("[Bootstrap] Fetching 7-day history for all machines…")
+    if not SIM_BASE_URL:
+        log.info("[Bootstrap] Synthetic-only mode active; skipping external history bootstrap")
+    else:
+        log.info("[Bootstrap] Fetching 7-day history for all machines…")
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        tasks   = [_fetch_history(mid, client) for mid in MACHINE_IDS]
-        results = await asyncio.gather(*tasks)
+    if SIM_BASE_URL:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            tasks   = [_fetch_history(mid, client) for mid in MACHINE_IDS]
+            results = await asyncio.gather(*tasks)
+    else:
+        results = [[] for _ in MACHINE_IDS]
 
     history_by_machine = {m: h for m, h in zip(MACHINE_IDS, results)}
 
@@ -146,6 +174,8 @@ async def _bootstrap(app: AppState) -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    log.info("[Startup] backend ready on /ws and /state")
+    log.info("[Startup] SIM_BASE_URL=%s", SIM_BASE_URL or "<unset - synthetic mode>")
     app_state.baseline  = BaselineManager()
     app_state.piv       = PIVValidator()
     app_state.detector  = AnomalyDetector()

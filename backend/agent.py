@@ -11,10 +11,16 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 import google.generativeai as genai
 
-from baseline import RegimeBaseline
-from detector import AnomalyResult
-from piv import PIVResult
-from model import MLIntelligence
+try:
+    from .baseline import RegimeBaseline
+    from .detector import AnomalyResult
+    from .piv import PIVResult
+    from .model import MLIntelligence
+except ImportError:
+    from baseline import RegimeBaseline
+    from detector import AnomalyResult
+    from piv import PIVResult
+    from model import MLIntelligence
 
 log = logging.getLogger("aura.agent")
 

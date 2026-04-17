@@ -10,7 +10,10 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Tuple
 
-from baseline import RegimeBaseline
+try:
+    from .baseline import RegimeBaseline
+except ImportError:
+    from baseline import RegimeBaseline
 
 log = logging.getLogger("aura.detector")
 

@@ -35,8 +35,9 @@ Physics-validated predictive maintenance platform with a FastAPI backend pipelin
 
 ### Backend
 - SIM_BASE_URL (optional)
-  - default: http://localhost:3000
-  - used for simulator history and stream source (for example /history/{machine_id} and /stream/{machine_id})
+  - default: unset
+  - when set, used for simulator history and stream source (for example /history/{machine_id} and /stream/{machine_id})
+  - when unset, the backend runs in synthetic-only mode and keeps the dashboard live without external SSE input
 
 ### Frontend
 - NEXT_PUBLIC_BACKEND_URL (optional)
@@ -50,6 +51,12 @@ Physics-validated predictive maintenance platform with a FastAPI backend pipelin
 ```bash
 pip install -r requirements.txt
 uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Alternative (equivalent):
+
+```bash
+python -m uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 ### 2. Frontend
@@ -74,10 +81,18 @@ npm run build
 
 ```bash
 python backend/test_pipeline_local.py
+python -m unittest discover -s tests -v
 ```
 
-Notes:
-- tests/test_backend_pipeline.py currently targets a legacy package layout (backend.anomaly.*, backend.models.*) and is not aligned with the active module layout used by backend/main.py.
+## Troubleshooting
+
+- If you see repeated `GET /stream/<machine_id> 404` in frontend/backend logs:
+  - some process is still pointing at a simulator endpoint that is not running.
+  - frontend uses `http://localhost:3000` by default, so do not use that as simulator base.
+  - if you want a real simulator, set `SIM_BASE_URL` to its host explicitly.
+  - if you do not have a simulator, leave `SIM_BASE_URL` unset and the backend will stay in synthetic mode.
+
+- If no simulator is running, backend now falls back to synthetic predicted readings so the dashboard stays live.
 
 ## API Reference (Backend)
 

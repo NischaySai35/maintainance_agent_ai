@@ -7,14 +7,45 @@ PIV -> Dynamic Regimes -> Z-score -> CUSUM -> Feature Extraction
 """
 from __future__ import annotations
 import asyncio, json, logging, random
+from datetime import datetime, timezone
 from typing import AsyncIterator, Optional
 import httpx
 
-from state import AppState, MACHINE_IDS, SIM_BASE_URL
+try:
+    from .state import AppState, MACHINE_IDS, SIM_BASE_URL
+except ImportError:
+    from state import AppState, MACHINE_IDS, SIM_BASE_URL
 log = logging.getLogger("aura.ingestor")
 
 BACKOFF_BASE, BACKOFF_MAX, BACKOFF_JITTER = 1.0, 10.0, 0.5
 DEAD_RECKON_INTERVAL, SSE_CONNECT_TIMEOUT, SSE_READ_TIMEOUT = 1.0, 10.0, 30.0
+
+_SYNTHETIC_BASELINES = {
+    "CNC_01": {"temperature_C": 71.0, "vibration_mm_s": 1.8, "rpm": 1450.0, "current_A": 12.4},
+    "CNC_02": {"temperature_C": 68.0, "vibration_mm_s": 2.1, "rpm": 1380.0, "current_A": 11.8},
+    "PUMP_03": {"temperature_C": 76.0, "vibration_mm_s": 2.6, "rpm": 2820.0, "current_A": 19.6},
+    "CONVEYOR_04": {"temperature_C": 44.0, "vibration_mm_s": 1.0, "rpm": 420.0, "current_A": 8.4},
+}
+
+
+def _synthetic_reading(machine_id: str, previous: Optional[dict]) -> dict:
+    base = _SYNTHETIC_BASELINES.get(machine_id, _SYNTHETIC_BASELINES["CNC_01"])
+    src = previous or base
+
+    def rw(key: str, jitter: float, lo: float, hi: float) -> float:
+        val = float(src.get(key, base[key])) + random.uniform(-jitter, jitter)
+        return max(lo, min(hi, val))
+
+    return {
+        "machine_id": machine_id,
+        "temperature_C": round(rw("temperature_C", 0.8, 20.0, 140.0), 2),
+        "vibration_mm_s": round(rw("vibration_mm_s", 0.08, 0.0, 12.0), 3),
+        "rpm": round(rw("rpm", 22.0, 0.0, 6000.0), 1),
+        "current_A": round(rw("current_A", 0.35, 0.0, 300.0), 2),
+        "status": "running",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "predicted": True,
+    }
 
 async def _sse_events(url: str) -> AsyncIterator[dict]:
     timeout = httpx.Timeout(connect=SSE_CONNECT_TIMEOUT, read=SSE_READ_TIMEOUT, write=10.0, pool=10.0)
@@ -149,10 +180,25 @@ async def _process_reading(reading: dict, previous: Optional[dict], app: AppStat
     return payload
 
 async def _consume_machine(machine_id: str, app: AppState) -> None:
-    url = f"{SIM_BASE_URL}/stream/{machine_id}"
+    url = f"{SIM_BASE_URL}/stream/{machine_id}" if SIM_BASE_URL else ""
     delay = BACKOFF_BASE
     previous = None
     first_reconnect = False
+
+    if not SIM_BASE_URL:
+        log.info("[Ingestor] %s running in synthetic-only mode (SIM_BASE_URL unset)", machine_id)
+        while True:
+            predicted = app.shadow.predict(machine_id)
+            if predicted is None:
+                predicted = _synthetic_reading(machine_id, previous)
+
+            predicted.setdefault("machine_id", machine_id)
+            try:
+                await _process_reading(predicted, previous, app)
+                previous = predicted
+            except Exception as pipe_exc:
+                log.debug(f"Dead-reckon err: {pipe_exc}")
+            await asyncio.sleep(DEAD_RECKON_INTERVAL)
 
     while True:
         try:
@@ -168,17 +214,21 @@ async def _consume_machine(machine_id: str, app: AppState) -> None:
                 delay = BACKOFF_BASE
 
         except Exception as exc:
+            log.warning("[Ingestor] %s stream unavailable at %s (%s). Using shadow/synthetic fallback.", machine_id, url, exc)
             first_reconnect = True
             loop = asyncio.get_event_loop()
             end_time = loop.time() + delay
             while loop.time() < end_time:
                 predicted = app.shadow.predict(machine_id)
-                if predicted is not None:
-                    predicted.setdefault("machine_id", machine_id)
-                    try: 
-                        await _process_reading(predicted, previous, app)
-                        previous = predicted
-                    except Exception as pipe_exc: log.debug(f"Dead-reckon err: {pipe_exc}")
+                if predicted is None:
+                    predicted = _synthetic_reading(machine_id, previous)
+
+                predicted.setdefault("machine_id", machine_id)
+                try:
+                    await _process_reading(predicted, previous, app)
+                    previous = predicted
+                except Exception as pipe_exc:
+                    log.debug(f"Dead-reckon err: {pipe_exc}")
                 await asyncio.sleep(DEAD_RECKON_INTERVAL)
             delay = min(delay * 2.0 + random.uniform(0.0, BACKOFF_JITTER), BACKOFF_MAX)
 

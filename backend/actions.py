@@ -2,7 +2,7 @@
 actions.py — Aura Sovereign Action Layer
 =========================================
 Evaluates the risk score for each pipeline tick and triggers the appropriate
-action against the simulation server (localhost:3000).
+action against the simulation server when one is configured.
 
 Decision table
 --------------
@@ -34,7 +34,7 @@ THRESHOLD_ALERT:       float = 40.0
 THRESHOLD_MAINTENANCE: float = 70.0
 
 # Simulation server base URL
-SIM_BASE_URL: str = os.getenv("SIM_BASE_URL", "http://localhost:3000")
+SIM_BASE_URL: str = os.getenv("SIM_BASE_URL", "")
 
 
 class ActionLayer:
