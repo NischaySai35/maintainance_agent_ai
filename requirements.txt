@@ -1,3 +1,33 @@
+# Aura Sovereign — Backend Dependencies
+# =======================================
+# Install all with:
+#   cd <project-root>
+#   pip install -r requirements.txt
+#
+# Run the backend with:
+#   cd backend
+#   uvicorn main:app --reload --host 0.0.0.0 --port 8000
+
+# Web framework
 fastapi==0.116.1
+
+# ASGI server with WebSocket + HTTP/2 support
 uvicorn[standard]==0.35.0
+
+# Data validation
 pydantic==2.11.7
+
+# Async HTTP client — pure Python, no C compiler needed
+httpx==0.28.1
+
+# WebSocket support 
+websockets==14.2
+
+# Machine Learning Layer (KMeans, LogReg)
+numpy
+pandas
+scikit-learn
+
+# Agent War Room
+google-generativeai
+python-dotenv

@@ -1,282 +1,222 @@
-"""AURA SOVEREIGN — FastAPI application entry point.
-
-Provides:
-  GET  /           — system info
-  GET  /state      — current snapshot of all machines + alerts
-  GET  /stream     — SSE stream (~1 Hz per machine) driving the dashboard
-  POST /alert      — manual alert logging
-  POST /schedule-maintenance — manual maintenance scheduling
+"""
+main.py — Aura Sovereign FastAPI Application Entry Point
+=========================================================
 """
 from __future__ import annotations
 
 import asyncio
-import json
-from collections import deque
+import logging
+import sys
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import AsyncIterator
-
-from fastapi import FastAPI
+import pandas as pd
+import httpx
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
-from backend.actions.manager import ActionManager
-from backend.agents.reasoning import MultiAgentReasoner
-from backend.anomaly.detector import AnomalyDetector
-from backend.ingestion.simulator import MachineSimulator
-from backend.memory.baseline import BaselineMemory
-from backend.models.schemas import AlertRequest, ScheduleRequest, SensorReading
-from backend.physics.validation import PhysicalInertiaValidator
-from backend.risk.scoring import RiskScorer
+from actions  import ActionLayer
+from agent    import LLMExplainer
+from baseline import BaselineManager
+from detector import AnomalyDetector
+from ingestor import start_all_ingestion
+from piv      import PIVValidator
+from shadow   import ShadowStateManager
+from cusum    import CusumDetector
+from model    import MLIntelligence
+from state    import (
+    AppState,
+    MACHINE_IDS,
+    MACHINE_TYPE,
+    SIM_BASE_URL,
+    app_state,
+)
 
-# -----------------------------------------------------------------------
-# Constants
-# -----------------------------------------------------------------------
-MACHINE_IDS = ["M-101", "M-102", "M-103", "M-104"]
-REASONING_LOG_MAX = 500
-ALERT_SNAPSHOT_MAX = 50
+logging.basicConfig(
+    stream  = sys.stdout,
+    level   = logging.INFO,
+    format  = "%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
+    datefmt = "%H:%M:%S",
+)
+log = logging.getLogger("aura.main")
 
+class AlertRequest(BaseModel):
+    machine_id: str
+    message:    str
+    risk_score: float
+    category:   str = "manual"
 
-# -----------------------------------------------------------------------
-# Pipeline runtime — holds all stateful components
-# -----------------------------------------------------------------------
-class PipelineRuntime:
-    """Coordinates all pipeline layers for the full machine fleet."""
+class ScheduleRequest(BaseModel):
+    machine_id: str
+    risk_score: float
+    reason:     str
 
-    def __init__(self) -> None:
-        self.validator = PhysicalInertiaValidator()
-        self.memory = BaselineMemory()
-        self.detector = AnomalyDetector()
-        self.scorer = RiskScorer()
-        self.reasoner = MultiAgentReasoner()
-        self.actions = ActionManager()
+async def _fetch_history(machine_id: str, client: httpx.AsyncClient) -> list[dict]:
+    url = f"{SIM_BASE_URL}/history/{machine_id}"
+    try:
+        resp = await client.get(url)
+        if resp.status_code == 200:
+            data = resp.json()
+            readings = data.get("readings", []) if isinstance(data, dict) else data
+            log.info("[Bootstrap] %s — fetched %d historical readings", machine_id, len(readings))
+            return readings if isinstance(readings, list) else []
+        log.warning("[Bootstrap] %s — /history HTTP %d", machine_id, resp.status_code)
+        return []
+    except Exception as exc:
+        log.warning("[Bootstrap] %s — /history unreachable (%s)", machine_id, exc)
+        return []
 
-        self.simulators: list[MachineSimulator] = [
-            MachineSimulator(mid, seed=idx + 42)
-            for idx, mid in enumerate(MACHINE_IDS)
-        ]
+async def _bootstrap(app: AppState) -> None:
+    log.info("[Bootstrap] Fetching 7-day history for all machines…")
 
-        # Per-machine state cache — used by /state and the SSE loop
-        self.latest: dict[str, dict] = {}
-        self.reasoning_log: deque[str] = deque(maxlen=REASONING_LOG_MAX)
-        self._tick = 1
-        self._lock = asyncio.Lock()
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        tasks   = [_fetch_history(mid, client) for mid in MACHINE_IDS]
+        results = await asyncio.gather(*tasks)
 
-    def bootstrap(self) -> None:
-        """Pre-fill baseline memory with synthetic 7-day history."""
-        for sim in self.simulators:
-            for reading in sim.historical_bootstrap():
-                self.memory.add(reading)
-            # Seed latest with the last bootstrapped reading
-            if sim.last_reading is not None:
-                mid = sim.machine_id
-                self.latest[mid] = {
-                    "reading": sim.last_reading.model_dump(mode="json"),
-                    "risk_score": 0.0,
-                    "decision": "Bootstrapping complete",
-                    "reasoning_log": [],
-                    "validation_reason": "initial",
-                    "predicted": False,
-                    "priority_rank": 0,
-                }
+    history_by_machine = {m: h for m, h in zip(MACHINE_IDS, results)}
 
-    async def tick(self) -> list[dict]:
-        """Run one pipeline tick across all machines and return serialisable
-        output payloads."""
-        async with self._lock:
-            candidates = [sim.next_live(self._tick) for sim in self.simulators]
-            shared = self._detect_shared_event(candidates)
-            payloads: list[dict] = []
+    # Train Regimes (KMeans)
+    app.ml_model.train_regimes(history_by_machine)
 
-            for reading in candidates:
-                payload = self._process_one(reading, shared)
-                payloads.append(payload)
+    features_list = []
+    labels_list = []
 
-            self._rerank_priority()
-            self._tick += 1
-            return payloads
+    for machine_id, history in history_by_machine.items():
+        # Load baselines correctly
+        app.baseline.load_history(machine_id, history, app.ml_model.predict_regime)
 
-    # ------------------------------------------------------------------
-    # Internals
-    # ------------------------------------------------------------------
+        z_scores_hist = {"temperature_C": [], "vibration_mm_s": [], "rpm": [], "current_A": []}
+        for r in history:
+            reg = app.ml_model.predict_regime(machine_id, float(r.get("rpm", 0)))
+            bl = app.baseline.get_baseline(machine_id, reg)
+            for s in z_scores_hist.keys():
+                z = (float(r.get(s, 0)) - bl.get(s).mean) / max(bl.get(s).std, 1e-9)
+                z_scores_hist[s].append(z)
 
-    def _process_one(
-        self, reading: SensorReading, shared: str | None
-    ) -> dict:
-        mid = reading.machine_id
+        # CUSUM Threshold training
+        app.cusum.calculate_historical_thresholds(machine_id, z_scores_hist)
 
-        # Retrieve the last accepted reading for physics comparison
-        prev_raw = self.latest.get(mid, {}).get("reading")
-        previous: SensorReading | None = (
-            SensorReading.model_validate(prev_raw) if prev_raw else None
-        )
+        # Calibrate PIV Limits dynamically
+        rate_data = app.baseline.get_rate_data(machine_id)
+        app.piv.calibrate(machine_id, MACHINE_TYPE.get(machine_id, "cnc"), rate_data)
 
-        validation = self.validator.validate(reading, previous)
-        accepted = validation.reading
+        # Second Pass over history for Risk ML (Logistic Regression) Dataset preparation
+        app.cusum.S[machine_id] = {s: 0.0 for s in z_scores_hist.keys()}
+        prev = None
+        duration = 0
 
-        self.memory.add(accepted)
-        baseline = self.memory.compute(accepted)
-        finding = self.detector.detect(accepted, baseline)
-        risk = self.scorer.score(finding)
-        decision = self.reasoner.reason(
-            machine_id=mid,
-            validation=validation,
-            baseline=baseline,
-            finding=finding,
-            risk=risk,
-            shared_event=shared,
-        )
+        for r in history:
+            reg = app.ml_model.predict_regime(machine_id, float(r.get("rpm", 0)))
+            bl = app.baseline.get_baseline(machine_id, reg)
+            
+            z_abs, z_raw = {}, {}
+            for s in z_scores_hist.keys():
+                z = (float(r.get(s, 0)) - bl.get(s).mean) / max(bl.get(s).std, 1e-9)
+                z_raw[s], z_abs[s] = z, abs(z)
+                
+            cur_cusum = app.cusum.update(machine_id, z_raw)
+            drifting = app.cusum.detect_drift(machine_id, cur_cusum)
+            
+            rates = {s: abs(float(r.get(s, 0)) - float(prev.get(s, 0))) if prev else 0.0 for s in z_scores_hist.keys()}
+            
+            spike = [s for s, z in z_abs.items() if z > 3.0]
+            compound = sum(1 for z in z_abs.values() if z > 2.2) >= 2
+            
+            is_anomaly = bool(spike) or bool(drifting) or compound
+            duration = duration + 1 if is_anomaly else 0
 
-        # Auto-trigger actions based on risk threshold
-        alert_payload = None
-        schedule_payload = None
-        if risk.risk_score >= 50:
-            alert_payload = self.actions.post_alert(
-                AlertRequest(
-                    machine_id=mid,
-                    message=decision.final_decision,
-                    risk_score=risk.risk_score,
-                    category="real_failure" if risk.risk_score >= 80 else "warning",
-                )
-            )
-        if risk.risk_score >= 80:
-            schedule_payload = self.actions.schedule(
-                ScheduleRequest(
-                    machine_id=mid,
-                    risk_score=risk.risk_score,
-                    reason=decision.final_decision,
-                )
-            )
+            feat = [
+                z_abs["temperature_C"], z_abs["vibration_mm_s"], z_abs["rpm"], z_abs["current_A"],
+                cur_cusum["temperature_C"], cur_cusum["vibration_mm_s"],
+                rates["temperature_C"], rates["vibration_mm_s"],
+                len(set(spike + drifting)), duration,
+                0 if reg == "idle" else (1 if reg == "active" else 2)
+            ]
+            features_list.append(feat)
+            labels_list.append(1 if is_anomaly else 0)
+            prev = r
 
-        # Update the per-machine state cache
-        self.latest[mid] = {
-            "reading": accepted.model_dump(mode="json"),
-            "risk_score": risk.risk_score,
-            "decision": decision.final_decision,
-            "reasoning_log": decision.reasoning_log,
-            "validation_reason": validation.reason,
-            "predicted": accepted.predicted,
-            "priority_rank": self.latest.get(mid, {}).get("priority_rank", 0),
-            "regime": baseline.regime,
-            "anomaly_types": finding.anomaly_types,
-        }
-        self.reasoning_log.extend(decision.reasoning_log)
+    if features_list:
+        df_X = pd.DataFrame(features_list)
+        series_y = pd.Series(labels_list)
+        app.ml_model.train_risk_model(df_X, series_y)
 
-        return {
-            "reading": accepted.model_dump(mode="json"),
-            "validation": validation.model_dump(mode="json"),
-            "baseline": baseline.model_dump(mode="json"),
-            "finding": finding.model_dump(mode="json"),
-            "decision": decision.model_dump(mode="json"),
-            "risk": risk.model_dump(mode="json"),
-            "alert": alert_payload,
-            "schedule": schedule_payload,
-        }
-
-    @staticmethod
-    def _detect_shared_event(readings: list[SensorReading]) -> str | None:
-        """Return a human-readable description if a cross-machine event is
-        detected (e.g. ambient temperature excursion or power surge)."""
-        hot = [r for r in readings if r.temperature > 84]
-        vibrating = [r for r in readings if r.vibration > 2.5]
-        if len(hot) >= 2:
-            return (
-                f"{len(hot)} machines simultaneously over-temperature — "
-                "possible ambient/environmental event"
-            )
-        if len(vibrating) >= 2:
-            return (
-                f"{len(vibrating)} machines with high vibration simultaneously — "
-                "possible upstream mechanical disturbance"
-            )
-        return None
-
-    def _rerank_priority(self) -> None:
-        """Sort machines by risk score and assign priority_rank (1 = highest)."""
-        ranked = sorted(
-            self.latest.items(),
-            key=lambda kv: kv[1].get("risk_score", 0),
-            reverse=True,
-        )
-        for rank, (mid, _) in enumerate(ranked, start=1):
-            self.latest[mid]["priority_rank"] = rank
-
-
-# -----------------------------------------------------------------------
-# Application setup
-# -----------------------------------------------------------------------
-runtime = PipelineRuntime()
-
+    log.info("[Bootstrap] Complete for: %s", app.baseline.all_machines_loaded())
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    runtime.bootstrap()
+    app_state.baseline  = BaselineManager()
+    app_state.piv       = PIVValidator()
+    app_state.detector  = AnomalyDetector()
+    app_state.shadow    = ShadowStateManager()
+    app_state.actions   = ActionLayer(sim_base_url=SIM_BASE_URL)
+    app_state.explainer = LLMExplainer()
+    app_state.cusum     = CusumDetector()
+    app_state.ml_model  = MLIntelligence()
+
+    await _bootstrap(app_state)
+    await start_all_ingestion(app_state)
     yield
+    for task in app_state.ingestor_tasks.values(): task.cancel()
+    await asyncio.gather(*app_state.ingestor_tasks.values(), return_exceptions=True)
 
+app = FastAPI(title="Aura Sovereign", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-app = FastAPI(
-    title="AURA SOVEREIGN",
-    description="Physics-Validated Autonomous Maintenance System",
-    version="1.0.0",
-    lifespan=lifespan,
-)
+@app.get("/")
+async def root(): return {"system": "Aura Sovereign", "active_consumers": list(app_state.ingestor_tasks.keys())}
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-# -----------------------------------------------------------------------
-# Routes
-# -----------------------------------------------------------------------
-
-@app.get("/", summary="System info")
-async def root() -> dict:
+@app.get("/state")
+async def get_state() -> dict:
     return {
-        "name": "AURA SOVEREIGN",
-        "description": "Physics-Validated Autonomous Maintenance System",
-        "pipeline": "ingestion → physics → baseline → agents → risk → actions",
-        "machines": MACHINE_IDS,
-        "tick": runtime._tick,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "machines": {
+            mid: {
+                "machine_id":      snap.machine_id,
+                "timestamp":       snap.timestamp,
+                "temperature_C":   snap.temperature_C,
+                "vibration_mm_s":  snap.vibration_mm_s,
+                "rpm":             snap.rpm,
+                "current_A":       snap.current_A,
+                "status":          snap.status,
+                "regime":          snap.regime,
+                "predicted":       snap.predicted,
+                "piv_accepted":    snap.piv_accepted,
+                "piv_reason":      snap.piv_reason,
+                "anomaly_types":   snap.anomaly_types,
+                "z_scores":        snap.z_scores,
+                "cusum_values":    snap.cusum_values,
+                "risk_score":      snap.risk_score,
+                "explanation":     snap.explanation,
+            } for mid, snap in app_state.snapshots.items()
+        },
+        "alerts": list(app_state.actions.alert_log[-50:]) if app_state.actions else [],
+        "maintenance_events": list(app_state.actions.maintenance_log[-50:]) if app_state.actions else [],
     }
 
-
-@app.get("/state", summary="Current fleet snapshot")
-async def state() -> dict:
-    """Returns the latest state for all machines plus recent alerts and
-    reasoning logs."""
-    return {
-        "machines": runtime.latest,
-        "alerts": runtime.actions.alert_log[-ALERT_SNAPSHOT_MAX:],
-        "scheduled_maintenance": runtime.actions.scheduled[-ALERT_SNAPSHOT_MAX:],
-        "reasoning_log": list(runtime.reasoning_log)[-150:],
-    }
-
-
-@app.get("/stream", summary="SSE — real-time machine events")
-async def stream() -> StreamingResponse:
-    """Server-Sent Events endpoint.  Emits one ``machine`` event per machine
-    per tick (~1 Hz), carrying the full pipeline output as JSON."""
-
-    async def generator():
-        while True:
-            payloads = await runtime.tick()
-            for payload in payloads:
-                data = json.dumps(payload, default=str)
-                yield f"event: machine\ndata: {data}\n\n"
-            await asyncio.sleep(1)
-
-    return StreamingResponse(generator(), media_type="text/event-stream")
-
-
-@app.post("/alert", summary="Log an alert manually")
+@app.post("/alert")
 async def post_alert(request: AlertRequest) -> dict:
-    return runtime.actions.post_alert(request)
+    res = await app_state.actions.post_alert_manual(request.machine_id, request.message, request.risk_score, request.category)
+    await app_state.broadcast({"event": "manual_alert", **res})
+    return res
 
-
-@app.post("/schedule-maintenance", summary="Schedule maintenance manually")
+@app.post("/schedule-maintenance")
 async def schedule_maintenance(request: ScheduleRequest) -> dict:
-    return runtime.actions.schedule(request)
+    res = await app_state.actions.post_maintenance_manual(request.machine_id, request.risk_score, request.reason)
+    await app_state.broadcast({"event": "manual_maintenance", **res})
+    return res
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await app_state.connect_ws(websocket)
+    try:
+        await websocket.send_json({"event": "initial_snapshot", "timestamp": datetime.now(timezone.utc).isoformat(), "machines": {}})
+        while True:
+            msg = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+            if msg.lower().strip() == "ping": await websocket.send_text('{"event":"pong"}')
+    except asyncio.TimeoutError:
+        await websocket.send_text('{"event":"heartbeat"}')
+    except Exception: pass
+    finally:
+        await app_state.disconnect_ws(websocket)
