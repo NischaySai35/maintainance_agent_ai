@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-slate-950 text-slate-100 font-mono;
+}
+
+/* Subtle animated border on machine cards that have active anomalies */
+.card-anomaly {
+  animation: pulse-border 2s ease-in-out infinite;
+}
+
+@keyframes pulse-border {
+  0%, 100% { border-color: rgb(239 68 68 / 0.7); }
+  50%       { border-color: rgb(239 68 68 / 0.2); }
+}
