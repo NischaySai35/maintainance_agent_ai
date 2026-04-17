@@ -243,10 +243,12 @@ async def websocket_endpoint(websocket: WebSocket):
     try:
         await websocket.send_json({"event": "initial_snapshot", "timestamp": datetime.now(timezone.utc).isoformat(), "machines": {}})
         while True:
-            msg = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
-            if msg.lower().strip() == "ping": await websocket.send_text('{"event":"pong"}')
-    except asyncio.TimeoutError:
-        await websocket.send_text('{"event":"heartbeat"}')
+            try:
+                msg = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                if msg.lower().strip() == "ping":
+                    await websocket.send_text('{"event":"pong"}')
+            except asyncio.TimeoutError:
+                await websocket.send_text('{"event":"heartbeat"}')
     except Exception: pass
     finally:
         await app_state.disconnect_ws(websocket)

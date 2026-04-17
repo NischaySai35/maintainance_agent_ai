@@ -292,7 +292,7 @@ function DiagSphere({ signals }: { signals: SphereSignals }) {
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(50, 1, 0.1, 100);
-    camera.position.z = 4.4;
+    camera.position.z = 6.0;
 
     const onResize = () => {
       const w = canvas.clientWidth;
@@ -466,6 +466,7 @@ function MetricCard({ metricKey, ms }: { metricKey: MetricKey; ms: MetricStatus 
       backdropFilter: 'blur(14px)',
       padding: '14px 18px',
       transition: 'border-color 0.5s, background 0.5s',
+      width: 200,
     }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <span style={{
@@ -552,23 +553,33 @@ export default function EntropySphere({ reading }: EntropySphereProps) {
         <DiagSphere signals={signals} />
       </div>
 
-      <div style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20, padding: '16px 20px' }}>
+      {/* TOP HUD: 3 CARDS ABOVE SPHERE */}
+      <div style={{ position: 'absolute', top: 16, left: 0, right: 0, zIndex: 20, padding: '0 20px' }}>
         <div style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-          gap: 10,
-          maxWidth: 620,
+          gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+          gap: 12,
+          maxWidth: 700,
           margin: '0 auto',
         }}>
-          {(['temp', 'vib', 'rpm', 'current'] as MetricKey[]).map(k => (
-            <MetricCard key={k} metricKey={k} ms={live[k]} />
-          ))}
+          <MetricCard metricKey="temp" ms={live.temp} />
+          <MetricCard metricKey="vib" ms={live.vib} />
+          <MetricCard metricKey="rpm" ms={live.rpm} />
         </div>
       </div>
 
+      {/* LEFT HUD: 1 CARD */}
       <div style={{
-        position: 'absolute', right: 14, top: '50%', transform: 'translateY(-50%)',
-        zIndex: 20, display: 'flex', flexDirection: 'column', gap: 10,
+        position: 'absolute', left: 20, top: '60%', transform: 'translateY(-50%)',
+        zIndex: 20,
+      }}>
+        <MetricCard metricKey="current" ms={live.current} />
+      </div>
+
+      {/* RIGHT HUD: 1 CARD + SYSTEM STATUS */}
+      <div style={{
+        position: 'absolute', right: 20, top: '60%', transform: 'translateY(-50%)',
+        zIndex: 20, display: 'flex', flexDirection: 'column', gap: 12,
       }}>
         <div style={{
           borderRadius: 14, border: `1px solid ${ms.border}`,

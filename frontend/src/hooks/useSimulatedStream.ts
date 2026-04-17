@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   generateAgentMessages,
   generateInitialAlerts,
+  generateNextReading,
   type AlertEntry,
   type SensorReading,
 } from '@/lib/mockData';
@@ -12,11 +13,13 @@ import { MACHINES } from '@/lib/constants';
 interface StreamState {
   readings: Record<string, SensorReading>;
   sparklines: Record<string, number[]>;
+  trendSeries: Record<string, TrendSeries>;
   alerts: AlertEntry[];
   agentMessages: { agent: string; message: string; time: string }[];
   shadowMachines: Set<string>;
   chaosMachineId: string | null;
   surgeDetected: boolean;
+  syntheticMode: boolean;
   lastAlertId: number;
 }
 
@@ -44,6 +47,27 @@ interface BackendStateResponse {
   machines?: Record<string, BackendMachineSnapshot>;
   alerts?: Array<Record<string, unknown>>;
   maintenance_events?: Array<Record<string, unknown>>;
+}
+
+interface TrendSeries {
+  temp: number[];
+  vib: number[];
+  rpm: number[];
+  current: number[];
+}
+
+function makeEmptyTrendSeries(): TrendSeries {
+  return { temp: [], vib: [], rpm: [], current: [] };
+}
+
+function appendTrendSeries(existing: TrendSeries | undefined, reading: SensorReading): TrendSeries {
+  const base = existing ?? makeEmptyTrendSeries();
+  return {
+    temp: [...base.temp.slice(-19), reading.temperature_C],
+    vib: [...base.vib.slice(-19), reading.vibration_mm_s],
+    rpm: [...base.rpm.slice(-19), reading.rpm],
+    current: [...base.current.slice(-19), reading.current_A],
+  };
 }
 
 const BACKEND_HTTP_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:8000';
@@ -136,16 +160,19 @@ export function useSimulatedStream() {
   const [state, setState] = useState<StreamState>({
     readings: {},
     sparklines: {},
+    trendSeries: {},
     alerts: generateInitialAlerts(),
     agentMessages: generateAgentMessages(),
     shadowMachines: new Set(),
     chaosMachineId: null,
     surgeDetected: false,
+    syntheticMode: false,
     lastAlertId: 10,
   });
 
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const syntheticConsoleRef = useRef<number>(0);
 
   const updateReading = useCallback((snapshot: BackendMachineSnapshot) => {
     setState(prev => {
@@ -154,6 +181,8 @@ export function useSimulatedStream() {
       const sparklines = { ...prev.sparklines };
       const existingSparkline = sparklines[snapshot.machine_id] ?? [];
       sparklines[snapshot.machine_id] = [...existingSparkline.slice(-19), reading.temperature_C];
+      const trendSeries = { ...prev.trendSeries };
+      trendSeries[snapshot.machine_id] = appendTrendSeries(trendSeries[snapshot.machine_id], reading);
 
       const alerts = [...prev.alerts];
       if (!reading.physicsBlocked && reading.riskScore >= 75 && reading.status !== 'shadow') {
@@ -193,6 +222,7 @@ export function useSimulatedStream() {
         ...prev,
         readings,
         sparklines,
+        trendSeries,
         alerts: alerts.slice(0, 50),
         agentMessages: agentMessages.slice(-60),
         chaosMachineId,
@@ -206,11 +236,15 @@ export function useSimulatedStream() {
       const machineSnapshots = payload.machines ?? {};
       const readings: Record<string, SensorReading> = {};
       const sparklines: Record<string, number[]> = {};
+      const trendSeries: Record<string, TrendSeries> = {};
+      const snapshots = Object.values(machineSnapshots);
+      const syntheticMode = snapshots.length > 0 && snapshots.every(snapshot => Boolean(snapshot.predicted));
 
       for (const [machineId, snapshot] of Object.entries(machineSnapshots)) {
         const reading = mapReading(snapshot, prev.shadowMachines, prev.chaosMachineId);
         readings[machineId] = reading;
         sparklines[machineId] = [reading.temperature_C];
+        trendSeries[machineId] = appendTrendSeries(undefined, reading);
       }
 
       const alerts = [
@@ -229,9 +263,11 @@ export function useSimulatedStream() {
         ...prev,
         readings,
         sparklines,
+        trendSeries,
         alerts: alerts.length > 0 ? alerts.slice(0, 50) : prev.alerts,
         agentMessages: liveMessages,
         surgeDetected: Object.values(readings).filter(item => item.riskScore >= 85).length >= 3,
+        syntheticMode,
       };
     });
   }, []);
@@ -251,6 +287,10 @@ export function useSimulatedStream() {
 
       if (!machineId) {
         return;
+      }
+
+      if (Boolean(readingSource.predicted ?? payload.predicted ?? false)) {
+        setState(prev => ({ ...prev, syntheticMode: true }));
       }
 
       updateReading({
@@ -307,6 +347,92 @@ export function useSimulatedStream() {
   }, [updateReading]);
 
   useEffect(() => {
+    if (!state.syntheticMode) {
+      syntheticConsoleRef.current = 0;
+      return;
+    }
+
+    const tick = () => {
+      setState(prev => {
+        if (!prev.syntheticMode) {
+          return prev;
+        }
+
+        const readings = { ...prev.readings };
+        const sparklines = { ...prev.sparklines };
+        const trendSeries = { ...prev.trendSeries };
+        const alerts = [...prev.alerts];
+        const now = Date.now();
+
+        for (const machine of MACHINES) {
+          const reading = generateNextReading(machine.id);
+          const nextReading: SensorReading = {
+            ...reading,
+            predicted: true,
+            status: prev.shadowMachines.has(machine.id) ? 'shadow' : reading.status,
+          };
+
+          readings[machine.id] = nextReading;
+          const sparkline = sparklines[machine.id] ?? [];
+          sparklines[machine.id] = [...sparkline.slice(-19), nextReading.temperature_C];
+          trendSeries[machine.id] = appendTrendSeries(trendSeries[machine.id], nextReading);
+
+          if (nextReading.status !== 'shadow' && nextReading.riskScore >= 75) {
+            const recentlyAlerted = alerts.find(
+              alert =>
+                alert.machine_id === machine.id &&
+                alert.type === 'verified' &&
+                Date.now() - new Date(alert.timestamp).getTime() < 30000,
+            );
+
+            if (!recentlyAlerted) {
+              alerts.unshift({
+                id: `synthetic-${machine.id}-${now}`,
+                timestamp: nextReading.timestamp,
+                machine_id: machine.id,
+                issue: `${machine.id} ${nextReading.riskScore >= 90 ? 'critical' : 'elevated'} risk detected`,
+                severity: nextReading.riskScore >= 90 ? 'critical' : 'warning',
+                action: nextReading.riskScore >= 90 ? 'Emergency maintenance scheduled' : 'Inspection flagged in queue',
+                type: 'verified',
+                riskScore: nextReading.riskScore,
+              });
+            }
+          }
+        }
+
+        const agentMessages = [...prev.agentMessages];
+        if (now - syntheticConsoleRef.current > 4000) {
+          const sourceMachine = MACHINES[Math.floor(Math.random() * MACHINES.length)]?.id ?? 'SYSTEM';
+          const sample = readings[sourceMachine] ?? readings[MACHINES[0]?.id ?? ''];
+          if (sample) {
+            agentMessages.push(
+              formatAgentMessage(
+                'Sentinel',
+                `${sourceMachine} synthetic pulse ${Math.round(sample.riskScore)}% risk, ${sample.status}${sample.predicted ? ' (predicted)' : ''}`,
+              ),
+            );
+            syntheticConsoleRef.current = now;
+          }
+        }
+
+        return {
+          ...prev,
+          readings,
+          sparklines,
+          trendSeries,
+          alerts: alerts.slice(0, 50),
+          agentMessages: agentMessages.slice(-60),
+          surgeDetected: Object.values(readings).filter(item => item.riskScore >= 85).length >= 3,
+        };
+      });
+    };
+
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [state.syntheticMode]);
+
+  useEffect(() => {
     const abortController = new AbortController();
 
     const loadSnapshot = async () => {
@@ -323,10 +449,26 @@ export function useSimulatedStream() {
         const payload = await response.json() as BackendStateResponse;
         seedFromBackend(payload);
       } catch {
+        const syntheticReadings: Record<string, SensorReading> = {};
+        const syntheticSparklines: Record<string, number[]> = {};
+        const syntheticTrendSeries: Record<string, TrendSeries> = {};
+
+        for (const machine of MACHINES) {
+          const reading = generateNextReading(machine.id);
+          const nextReading: SensorReading = { ...reading, predicted: true };
+          syntheticReadings[machine.id] = nextReading;
+          syntheticSparklines[machine.id] = [nextReading.temperature_C];
+          syntheticTrendSeries[machine.id] = appendTrendSeries(undefined, nextReading);
+        }
+
         setState(prev => ({
           ...prev,
+          readings: syntheticReadings,
+          sparklines: syntheticSparklines,
+          trendSeries: syntheticTrendSeries,
           alerts: generateInitialAlerts(),
           agentMessages: generateAgentMessages(),
+          syntheticMode: true,
         }));
       }
     };
@@ -456,6 +598,7 @@ export function useSimulatedStream() {
   return {
     readings: state.readings,
     sparklines: state.sparklines,
+    trendSeries: state.trendSeries,
     alerts: state.alerts,
     agentMessages: state.agentMessages,
     shadowMachines: state.shadowMachines,

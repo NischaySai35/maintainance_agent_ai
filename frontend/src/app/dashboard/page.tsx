@@ -30,6 +30,7 @@ export default function DashboardPage() {
   const {
     readings,
     sparklines,
+    trendSeries,
     alerts,
     agentMessages,
     injectChaos,
@@ -112,7 +113,7 @@ export default function DashboardPage() {
               {{
                 trends: (
                   <TrendsChart
-                    sparklineData={sparklines[selectedMachine] || []}
+                    trendSeries={trendSeries[selectedMachine]}
                     machineId={selectedMachine}
                   />
                 ),

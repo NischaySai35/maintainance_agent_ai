@@ -4,8 +4,15 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
 
+interface TrendSeries {
+  temp: number[];
+  vib: number[];
+  rpm: number[];
+  current: number[];
+}
+
 interface TrendsChartProps {
-  sparklineData: number[];
+  trendSeries?: TrendSeries;
   machineId: string;
 }
 
@@ -13,63 +20,67 @@ const METRICS = [
   { key: 'temp', label: 'Temperature', color: '#f97316', unit: '°C' },
   { key: 'vib', label: 'Vibration', color: '#a78bfa', unit: 'mm/s' },
   { key: 'rpm', label: 'RPM', color: '#06b6d4', unit: '' },
+  { key: 'current', label: 'Current', color: '#38bdf8', unit: 'A' },
 ] as const;
 
-const TrendsChart = ({ sparklineData, machineId }: TrendsChartProps) => {
+const EMPTY_SERIES: TrendSeries = { temp: [], vib: [], rpm: [], current: [] };
+
+const TrendsChart = ({ trendSeries, machineId }: TrendsChartProps) => {
   const isBrowser = typeof window !== 'undefined';
   const [visible, setVisible] = useState<Record<string, boolean>>({
     temp: true,
     vib: true,
-    rpm: false,
+    rpm: true,
+    current: true,
   });
 
-  // Generate fake correlated data from sparkline (temperature)
   const chartData = useMemo(() => {
-    const noise = (index: number, seed: number) => {
-      const value = Math.sin(index * 12.9898 + seed) * 43758.5453;
-      return (value - Math.floor(value)) - 0.5;
-    };
+    const source = trendSeries ?? EMPTY_SERIES;
+    const maxLength = Math.max(
+      source.temp.length,
+      source.vib.length,
+      source.rpm.length,
+      source.current.length,
+    );
 
-    return sparklineData.map((temp, i) => ({
-      idx: i,
-      temp: temp,
-      vib: Math.max(0.3, temp * 0.028 + noise(i, 3.1) * 0.3),
-      rpm: 1200 + Math.sin(i * 0.3) * 100 + noise(i, 9.7) * 50,
+    return Array.from({ length: maxLength }, (_, index) => ({
+      idx: index,
+      temp: source.temp[index] ?? null,
+      vib: source.vib[index] ?? null,
+      rpm: source.rpm[index] ?? null,
+      current: source.current[index] ?? null,
     }));
-  }, [sparklineData]);
+  }, [trendSeries]);
 
-  const toggle = (key: string) =>
-    setVisible(prev => ({ ...prev, [key]: !prev[key] }));
+  const toggle = (key: string) => setVisible(prev => ({ ...prev, [key]: !prev[key] }));
 
   return (
     <div>
-      {/* Metric toggles */}
-      <div className="flex items-center gap-2 mb-4">
-        {METRICS.map(m => (
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
+        {METRICS.map(metric => (
           <button
-            key={m.key}
-            onClick={() => toggle(m.key)}
+            key={metric.key}
+            onClick={() => toggle(metric.key)}
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all border ${
-              visible[m.key]
+              visible[metric.key]
                 ? 'border-transparent'
                 : 'border-transparent text-slate-600 opacity-40'
             }`}
-            style={visible[m.key] ? {
-              background: `${m.color}15`,
-              color: m.color,
+            style={visible[metric.key] ? {
+              background: `${metric.color}15`,
+              color: metric.color,
             } : undefined}
           >
-            <span className="w-2 h-2 rounded-full" style={{ background: m.color, opacity: visible[m.key] ? 1 : 0.3 }} />
-            {m.label}
+            <span className="w-2 h-2 rounded-full" style={{ background: metric.color, opacity: visible[metric.key] ? 1 : 0.3 }} />
+            {metric.label}
           </button>
         ))}
       </div>
 
-      {/* Chart */}
       <div className="h-[380px]">
         {isBrowser ? (
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData} margin={{ top: 5, right: 5, left: -20, bottom: 5 }}>
+            <LineChart data={chartData} margin={{ top: 5, right: 24, left: 0, bottom: 5 }}>
               <CartesianGrid stroke="rgba(255,255,255,0.03)" strokeDasharray="3 3" />
               <XAxis
                 dataKey="idx"
@@ -77,11 +88,14 @@ const TrendsChart = ({ sparklineData, machineId }: TrendsChartProps) => {
                 axisLine={{ stroke: 'rgba(255,255,255,0.05)' }}
                 tickLine={false}
               />
-              <YAxis
-                tick={{ fill: '#475569', fontSize: 10 }}
-                axisLine={false}
-                tickLine={false}
-              />
+              {METRICS.map(metric => (
+                <YAxis
+                  key={metric.key}
+                  yAxisId={metric.key}
+                  hide
+                  domain={['auto', 'auto']}
+                />
+              ))}
               <Tooltip
                 contentStyle={{
                   background: '#0f172a',
@@ -94,6 +108,7 @@ const TrendsChart = ({ sparklineData, machineId }: TrendsChartProps) => {
               />
               {visible.temp && (
                 <Line
+                  yAxisId="temp"
                   type="monotone"
                   dataKey="temp"
                   stroke="#f97316"
@@ -105,6 +120,7 @@ const TrendsChart = ({ sparklineData, machineId }: TrendsChartProps) => {
               )}
               {visible.vib && (
                 <Line
+                  yAxisId="vib"
                   type="monotone"
                   dataKey="vib"
                   stroke="#a78bfa"
@@ -116,6 +132,7 @@ const TrendsChart = ({ sparklineData, machineId }: TrendsChartProps) => {
               )}
               {visible.rpm && (
                 <Line
+                  yAxisId="rpm"
                   type="monotone"
                   dataKey="rpm"
                   stroke="#06b6d4"
@@ -123,6 +140,18 @@ const TrendsChart = ({ sparklineData, machineId }: TrendsChartProps) => {
                   dot={false}
                   isAnimationActive={false}
                   name="RPM"
+                />
+              )}
+              {visible.current && (
+                <Line
+                  yAxisId="current"
+                  type="monotone"
+                  dataKey="current"
+                  stroke="#38bdf8"
+                  strokeWidth={2}
+                  dot={false}
+                  isAnimationActive={false}
+                  name="Current (A)"
                 />
               )}
             </LineChart>

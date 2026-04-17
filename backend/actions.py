@@ -155,6 +155,17 @@ class ActionLayer:
 
     async def _post_alert(self, payload: dict) -> None:
         """POST payload to /alert on the simulation server."""
+        if not self._base:
+            self.alert_log.append(payload)
+            if len(self.alert_log) > 500:
+                self.alert_log = self.alert_log[-500:]
+            log.info(
+                "[Actions] synthetic-only mode, buffered alert for %s (risk=%.1f)",
+                payload.get("machine_id"),
+                payload.get("risk_score", 0),
+            )
+            return
+
         url = f"{self._base}/alert"
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
@@ -175,6 +186,17 @@ class ActionLayer:
 
     async def _post_maintenance(self, payload: dict) -> None:
         """POST payload to /schedule-maintenance on the simulation server."""
+        if not self._base:
+            self.maintenance_log.append(payload)
+            if len(self.maintenance_log) > 500:
+                self.maintenance_log = self.maintenance_log[-500:]
+            log.info(
+                "[Actions] synthetic-only mode, buffered maintenance for %s (risk=%.1f)",
+                payload.get("machine_id"),
+                payload.get("risk_score", 0),
+            )
+            return
+
         url = f"{self._base}/schedule-maintenance"
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
