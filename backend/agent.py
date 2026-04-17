@@ -68,14 +68,21 @@ class LLMExplainer:
         historian = self._historian_agent(baseline)
         
         # Decide narrative
-        if not self.llm_enabled:
+        if not self.llm_enabled or not piv_result.accepted or risk_score < 40:
             orchestrator, final, expl = self._orchestrator_fallback(
                 machine_id, risk_score, piv_result, anomaly, duration
             )
         else:
-            orchestrator, final, expl = self._orchestrator_gemini(
-                machine_id, risk_score, piv_result, anomaly, duration, baseline, sentinel, physicist, historian
-            )
+            try:
+                # Query Gemini to generate reasoning for ALL agents
+                sentinel, physicist, historian, orchestrator, final, expl = self._query_gemini_agents(
+                    machine_id, risk_score, anomaly, duration, baseline
+                )
+            except Exception as e:
+                log.warning(f"Failed to query Gemini: {e}")
+                orchestrator, final, expl = self._orchestrator_fallback(
+                    machine_id, risk_score, piv_result, anomaly, duration
+                )
 
         log.debug(f"[Agent] {machine_id} - Expl: {expl}")
 
@@ -118,29 +125,37 @@ class LLMExplainer:
             return f"Monitor flag triggered. Streak={duration}.", "Alert", f"{machine_id} showing unusual patterns ({','.join(anomaly.anomaly_types)}). Issue alert."
         return "Critical breakdown imminent.", "Critical", f"{machine_id} has sustained severe anomalies ({','.join(anomaly.anomaly_types)}). Immediate maintenance required."
 
-    def _orchestrator_gemini(self, machine_id, risk, piv, anomaly, duration, baseline, sent, physi, hist) -> tuple[str, str, str]:
-        if not piv.accepted or risk < 40:
-            return self._orchestrator_fallback(machine_id, risk, piv, anomaly, duration)
-            
+    def _query_gemini_agents(self, machine_id, risk, anomaly, duration, baseline) -> tuple[str, str, str, str, str, str]:
+        import json
         prompt = f"""
-        Act as the Orchestrator Agent for an industrial predictive maintenance system protecting {machine_id}.
-        Current State: Risk={risk:.1f}/100, Anomaly Types={anomaly.anomaly_types}, Duration={duration} ticks.
-        Agent Inputs:
-        - Sentinel: {sent}
-        - Physicist: {physi}
-        - Historian: {hist}
+        You are a multi-agent AI framework managing the predictive maintenance of {machine_id}.
+        Current State: Risk={risk:.1f}/100, Anomalies={anomaly.anomaly_types}, Streak Duration={duration} ticks.
+        Sensors Affected: {anomaly.affected_sensors}. Z-Scores: {anomaly.z_scores}.
+        Historical Regime: {baseline.regime} (Temps: {baseline.temperature.rolling_mean:.1f}C, Vib: {baseline.vibration.rolling_mean:.2f}g).
         
-        Provide a concise 1-sentence technical explanation of what is likely physically failing (e.g., 'bearing wear', 'cavitation') and a precise recommendation.
-        No fluff. Just the diagnosis and action.
+        Output a strict JSON object with exactly these keys, each containing a 1-sentence analytical observation:
+        - "sentinel": A statistical observation on the Z-scores and anomaly types.
+        - "physicist": A physical diagnosis of what hardware issue matches these sensor deviations. 
+        - "historian": Compare the current state to the historical regime baselines.
+        - "orchestrator": A final decisive conclusion synthesizing the above.
+        - "final": Exactly "Alert" or "Critical".
+        - "explanation": A concise summary string suitable for a human operator dashboard alert.
+        
+        Return ONLY valid JSON.
         """
-        try:
-            resp = self.model.generate_content(prompt)
-            text = resp.text.strip().replace("\n", " ")
-            if risk < 70:
-                final = "Alert"
-            else:
-                final = "Critical"
-            return "LLM consensus reached.", final, text
-        except Exception as e:
-            log.warning(f"Failed to query Gemini: {e}")
-            return self._orchestrator_fallback(machine_id, risk, piv, anomaly, duration)
+        
+        # Configure model to enforce JSON schema if possible, or just parse text
+        resp = self.model.generate_content(prompt)
+        text = resp.text.strip()
+        if text.startswith("```json"):
+            text = text[7:-3]
+            
+        data = json.loads(text)
+        return (
+            data.get("sentinel", "Sentinel analyzing statistical anomalies."),
+            data.get("physicist", "Physicist analyzing dynamics."),
+            data.get("historian", "Historian analyzing baselines."),
+            data.get("orchestrator", "Orchestrator synthesizing logic."),
+            data.get("final", "Alert"),
+            data.get("explanation", "AI Analysis completed.")
+        )
