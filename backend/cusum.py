@@ -62,7 +62,18 @@ class CusumDetector:
         current_cusum = {}
         for sensor in SENSORS:
             z = abs(z_scores.get(sensor, 0.0))
-            self.S[machine_id][sensor] = max(0.0, self.S[machine_id][sensor] + (z - self.k))
+            
+            if z < 1.0:
+                # If reading is fundamentally normal, aggressively decay the CUSUM accumulator
+                # This ensures the Risk Score quickly recovers once conditions stabilize
+                self.S[machine_id][sensor] = max(0.0, self.S[machine_id][sensor] * 0.8 - 0.5)
+            else:
+                self.S[machine_id][sensor] = max(0.0, self.S[machine_id][sensor] + (z - self.k))
+                
+            # Prevent infinity bloat if baseline failed to load
+            if self.S[machine_id][sensor] > 500.0:
+                self.S[machine_id][sensor] = 500.0
+                
             current_cusum[sensor] = self.S[machine_id][sensor]
             
         return current_cusum

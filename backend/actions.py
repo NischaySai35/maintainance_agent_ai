@@ -233,17 +233,17 @@ def _build_alert_payload(
 ) -> dict:
     return {
         "machine_id":     machine_id,
+        "reason":         explanation,
+        "reading": {
+            "temperature_C":  reading.get("temperature_C"),
+            "vibration_mm_s": reading.get("vibration_mm_s"),
+            "rpm":            reading.get("rpm"),
+            "current_A":      reading.get("current_A"),
+            "status":         reading.get("status")
+        },
         "anomaly_type":   anomaly_type,
         "timestamp":      timestamp,
         "risk_score":     risk_score,
-        "reason":         explanation,
-        # Full sensor snapshot
-        "temperature_C":  reading.get("temperature_C"),
-        "vibration_mm_s": reading.get("vibration_mm_s"),
-        "rpm":            reading.get("rpm"),
-        "current_A":      reading.get("current_A"),
-        "status":         reading.get("status"),
-        # Per-sensor Z-scores
         "z_scores":       z_scores,
         "category":       _categorise(risk_score),
     }
@@ -258,13 +258,13 @@ def _build_maintenance_payload(
     explanation:  str,
 ) -> dict:
     return {
-        "machine_id":   machine_id,
-        "anomaly_type": anomaly_type,
-        "risk_score":   risk_score,
-        "timestamp":    timestamp,
-        "reason":       explanation,
-        "status":       "scheduled",
-        "priority":     "immediate" if risk_score >= 85 else "high",
+        "machine_id":     machine_id,
+        "proposed_slot":  "IMMEDIATE" if risk_score >= 85 else "NEXT_SHIFT",
+        "anomaly_type":   anomaly_type,
+        "risk_score":     risk_score,
+        "timestamp":      timestamp,
+        "reason":         explanation,
+        "status":         "scheduled"
     }
 
 

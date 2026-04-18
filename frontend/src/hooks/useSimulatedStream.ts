@@ -443,9 +443,10 @@ export function useSimulatedStream() {
       });
     };
 
-    tick();
-    const id = setInterval(tick, 1000);
-    return () => clearInterval(id);
+    // Disabled to prevent frontend local simulator from colliding with the backend WebSocket stream
+    // tick();
+    // const id = setInterval(tick, 1000);
+    // return () => clearInterval(id);
   }, [state.syntheticMode]);
 
   useEffect(() => {

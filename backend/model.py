@@ -73,81 +73,39 @@ class MLIntelligence:
 
     def predict_risk(self, machine_id: str, features: dict, multi_sensor_anomaly: bool, high_current: bool, piv_rejected: bool) -> tuple[float, float]:
         """
-        Predict risk using the Logistic Regression model, applying hybrid heuristics.
+        Predict risk purely using the Logistic Regression model. No manual weighting constraints.
         Returns (raw_prob, risk_score)
         """
-        sensor_count = float(features.get("sensor_count", 0) or 0)
-        duration = float(features.get("duration", 0) or 0)
-        z_temp = abs(float(features.get("z_temp", 0) or 0))
-        z_vibration = abs(float(features.get("z_vibration", 0) or 0))
-        z_rpm = abs(float(features.get("z_rpm", 0) or 0))
-        z_current = abs(float(features.get("z_current", 0) or 0))
-        cusum_temp = abs(float(features.get("cusum_temp", 0) or 0))
-        cusum_vibration = abs(float(features.get("cusum_vibration", 0) or 0))
-        rate_temp = abs(float(features.get("rate_temp", 0) or 0))
-        rate_vibration = abs(float(features.get("rate_vibration", 0) or 0))
+        if not self.is_trained:
+            return 0.0, 0.0
 
-        max_z = max(z_temp, z_vibration, z_rpm, z_current)
-        z_component = min(max_z / 8.0, 1.0) * 100.0
-        duration_component = min(math.log1p(duration) / math.log1p(60.0), 1.0) * 100.0 if duration > 0 else 0.0
-        sensor_component = min(sensor_count / 4.0, 1.0) * 100.0
-        persistence_component = min(max(cusum_temp, cusum_vibration) / 6.0, 1.0) * 100.0
-        rate_component = min(max(rate_temp, rate_vibration) / 5.0, 1.0) * 100.0
+        # Order must exactly match training feature_ordered
+        feature_ordered = [
+            features.get("z_temp", 0),
+            features.get("z_vibration", 0),
+            features.get("z_rpm", 0),
+            features.get("z_current", 0),
+            features.get("cusum_temp", 0),
+            features.get("cusum_vibration", 0),
+            features.get("rate_temp", 0),
+            features.get("rate_vibration", 0),
+            features.get("sensor_count", 0),
+            features.get("duration", 0),
+            features.get("regime_id", 0)
+        ]
 
-        heuristic_score = (
-            0.42 * z_component
-            + 0.22 * duration_component
-            + 0.18 * sensor_component
-            + 0.10 * persistence_component
-            + 0.08 * rate_component
-        )
+        # Standardize features
+        X_val = self.scaler.transform([feature_ordered])
+        
+        # P(anomaly)
+        risk_prob = self.risk_model.predict_proba(X_val)[0][1]
+        
+        # Exact risk score projection per user constraint
+        risk_score = risk_prob * 100.0
 
-        if multi_sensor_anomaly:
-            heuristic_score += 12.0
-        if high_current:
-            heuristic_score += 10.0
+        # Severely suppress risk if Physical Interia Validation detected noise
         if piv_rejected:
-            heuristic_score *= 0.35
+            risk_score *= 0.1
 
-        heuristic_score = min(100.0, max(0.0, heuristic_score))
-
-        if not self.is_trained:
-            risk_score = heuristic_score
-        else:
-            # Order must match training
-            feature_ordered = [
-                features.get("z_temp", 0),
-                features.get("z_vibration", 0),
-                features.get("z_rpm", 0),
-                features.get("z_current", 0),
-                features.get("cusum_temp", 0),
-                features.get("cusum_vibration", 0),
-                features.get("rate_temp", 0),
-                features.get("rate_vibration", 0),
-                features.get("sensor_count", 0),
-                features.get("duration", 0),
-                features.get("regime_id", 0)
-            ]
-
-            X_val = self.scaler.transform([feature_ordered])
-            risk_prob = self.risk_model.predict_proba(X_val)[0][1]
-            risk_score = risk_prob * 100.0
-
-            # Hybrid Adjustment
-            if multi_sensor_anomaly:
-                risk_score += 15.0
-            if high_current:
-                risk_score += 10.0
-            if piv_rejected:
-                risk_score *= 0.2  # severely reduce if PIV thinks it's a glitch
-
-            risk_score = min(100.0, max(0.0, risk_score))
-
-        # Keep risk persistent across adjacent ticks so the dashboard decays instead of twitching.
-        previous_peak = self._smoothed_risk.get(machine_id, 0.0)
-        smoothed_risk = max(risk_score, previous_peak * 0.92)
-        self._smoothed_risk[machine_id] = smoothed_risk
-
-        if not self.is_trained:
-            return 0.0, round(smoothed_risk, 2)
-        return risk_prob, round(smoothed_risk, 2)
+        risk_score = min(100.0, max(0.0, risk_score))
+        return risk_prob, round(risk_score, 2)
