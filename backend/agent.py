@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Dict, List, Optional
 import google.generativeai as genai
 
@@ -38,7 +39,10 @@ class AgentDecision:
 class LLMExplainer:
     def __init__(self):
         from dotenv import load_dotenv
-        load_dotenv()  # Load .env file automatically
+        backend_env = Path(__file__).resolve().parent / '.env'
+        root_env = Path(__file__).resolve().parents[1] / '.env'
+        load_dotenv(dotenv_path=backend_env, override=False)
+        load_dotenv(dotenv_path=root_env, override=False)
         
         # Using placeholder model config if no API key is present
         api_key = os.getenv("GEMINI_API_KEY", "")

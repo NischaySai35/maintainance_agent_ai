@@ -40,6 +40,7 @@ interface BackendMachineSnapshot {
   cusum_values?: Record<string, number>;
   risk_score?: number;
   explanation?: string;
+  reasoning?: Record<string, string>;
 }
 
 interface BackendStateResponse {
@@ -156,6 +157,10 @@ function formatAgentMessage(agent: string, message: string) {
   return { agent, message, time: new Date().toISOString() };
 }
 
+function formatAgentName(agent: string): string {
+  return agent.charAt(0).toUpperCase() + agent.slice(1);
+}
+
 export function useSimulatedStream() {
   const [state, setState] = useState<StreamState>({
     readings: {},
@@ -207,13 +212,21 @@ export function useSimulatedStream() {
         }
       }
 
-      const agentMessages = [
-        ...prev.agentMessages,
-        formatAgentMessage(
-          'Sentinel',
-          `${snapshot.machine_id} -> ${Math.round(reading.riskScore)}% risk, ${reading.status}${snapshot.predicted ? ' (predicted)' : ''}`,
-        ),
-      ];
+      const agentMessages = [...prev.agentMessages];
+      const reasoningEntries = Object.entries(snapshot.reasoning ?? {});
+
+      if (reasoningEntries.length > 0) {
+        for (const [agent, message] of reasoningEntries) {
+          agentMessages.push(formatAgentMessage(formatAgentName(agent), message));
+        }
+      } else {
+        agentMessages.push(
+          formatAgentMessage(
+            'Sentinel',
+            `${snapshot.machine_id} -> ${Math.round(reading.riskScore)}% risk, ${reading.status}${snapshot.predicted ? ' (predicted)' : ''}`,
+          ),
+        );
+      }
 
       const surgeDetected = Object.values(readings).filter(item => item.riskScore >= 85).length >= 3;
       const chaosMachineId = prev.chaosMachineId === snapshot.machine_id ? null : prev.chaosMachineId;
@@ -254,8 +267,11 @@ export function useSimulatedStream() {
 
       const machineCount = Object.keys(machineSnapshots).length;
       const liveMessages = [
+        ...generateAgentMessages(),
         formatAgentMessage('System', `Connected to backend telemetry at ${BACKEND_HTTP_URL}`),
         formatAgentMessage('Sentinel', `Loaded ${machineCount} live machine snapshots from /state`),
+        formatAgentMessage('Physicist', `Physical checks armed for ${machineCount} machines`),
+        formatAgentMessage('Historian', `Historical baselines aligned for ${machineCount} machines`),
         formatAgentMessage('Orchestrator', `Active alerts: ${alerts.length}`),
       ];
 
@@ -406,10 +422,10 @@ export function useSimulatedStream() {
           const sample = readings[sourceMachine] ?? readings[MACHINES[0]?.id ?? ''];
           if (sample) {
             agentMessages.push(
-              formatAgentMessage(
-                'Sentinel',
-                `${sourceMachine} synthetic pulse ${Math.round(sample.riskScore)}% risk, ${sample.status}${sample.predicted ? ' (predicted)' : ''}`,
-              ),
+              formatAgentMessage('Sentinel', `${sourceMachine} synthetic pulse ${Math.round(sample.riskScore)}% risk, ${sample.status}${sample.predicted ? ' (predicted)' : ''}`),
+              formatAgentMessage('Physicist', `${sourceMachine} mechanics stable: vibration ${sample.vibration_mm_s.toFixed(2)} mm/s.`),
+              formatAgentMessage('Historian', `${sourceMachine} remains within its rolling baseline pattern.`),
+              formatAgentMessage('Orchestrator', `${sourceMachine} routing synthetic telemetry into the dashboard.`),
             );
             syntheticConsoleRef.current = now;
           }

@@ -269,7 +269,7 @@ const FRAG = `
     if (d > 0.5) discard;
     float core = smoothstep(0.5, 0.1, d);
     float halo = smoothstep(0.5, 0.3, d) * 0.35 * (1.0 + vGlow * 1.2);
-    gl_FragColor = vec4(vColor * (1.0 + vGlow * 0.55), core + halo);
+    gl_FragColor = vec4(vColor * (1.0 + vGlow * 0.55) * 1.3, core + halo);
   }`;
 
 function DiagSphere({ signals }: { signals: SphereSignals }) {
