@@ -122,7 +122,8 @@ export function generateNextReading(machineId: string, injectSpike = false, shad
     anomalyType: compound ? 'compound' : drift ? 'drift' : undefined,
   };
 
-  reading.riskScore = computeRiskScore(reading, machineId);
+  const rawRiskScore = computeRiskScore(reading, machineId);
+  reading.riskScore = Math.round(Math.max(rawRiskScore, prev.riskScore * 0.92));
   if (reading.riskScore >= 90) reading.status = 'fault';
   else if (reading.riskScore >= 60) reading.status = 'warning';
 

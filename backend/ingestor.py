@@ -121,7 +121,7 @@ async def _process_reading(reading: dict, previous: Optional[dict], app: AppStat
     multi_anomaly = len(anomaly.affected_sensors) >= 2
     high_curr = float(accepted.get("current_A", 0)) > 15.0
     
-    _, risk_score = app.ml_model.predict_risk(features, multi_anomaly, high_curr, not piv_result.accepted)
+    _, risk_score = app.ml_model.predict_risk(machine_id, features, multi_anomaly, high_curr, not piv_result.accepted)
 
     # 7. Agent War Room
     decision = app.explainer.reason(
