@@ -1,5 +1,5 @@
 'use client';
-import { memo } from 'react';
+import React, { memo } from 'react';
 import type { Machine } from '@/lib/constants';
 import type { SensorReading } from '@/lib/mockData';
 import { getRiskColor, getRiskLabel, formatNumber } from '@/lib/utils';
@@ -14,7 +14,8 @@ interface MachineCardProps {
 }
 
 const MachineCard = ({ machine, reading, sparkline, isSelected, onClick }: MachineCardProps) => {
-  const isBrowser = typeof window !== 'undefined';
+  const [isMounted, setIsMounted] = React.useState(false);
+  React.useEffect(() => setIsMounted(true), []);
 
   const risk = reading?.riskScore ?? 0;
   const riskColor = getRiskColor(risk);
@@ -63,7 +64,7 @@ const MachineCard = ({ machine, reading, sparkline, isSelected, onClick }: Machi
 
       {/* Analytics Visualization */}
       <div className="h-11 mt-4 -mx-1 opacity-60 group-hover:opacity-100 transition-opacity">
-        {isBrowser ? (
+        {isMounted ? (
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={sparkline}>
               <Line

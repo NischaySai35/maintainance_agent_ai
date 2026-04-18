@@ -162,13 +162,23 @@ async def _bootstrap(app: AppState) -> None:
                 0 if reg == "idle" else (1 if reg == "active" else 2)
             ]
             features_list.append(feat)
-            labels_list.append(1 if is_anomaly else 0)
+            
+            # FORCE AI to ignore jitter: only label as anomaly if it sustains for 3+ seconds
+            # This prevents 'instant 100%' jumps on 1-second noise pulses.
+            labels_list.append(1 if (is_anomaly and duration >= 3) else 0)
             prev = r
 
-    if features_list:
-        df_X = pd.DataFrame(features_list)
-        series_y = pd.Series(labels_list)
-        app.ml_model.train_risk_model(df_X, series_y)
+    # Guarantee Logistic Regression weight calibration by asserting absolute boundaries
+    if len(set(labels_list)) < 2:
+        features_list.extend([
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0],
+            [5.0, 5.0, 5.0, 5.0, 50.0, 50.0, 10.0, 10.0, 4.0, 20.0, 1]
+        ])
+        labels_list.extend([0, 1])
+
+    df_X = pd.DataFrame(features_list)
+    series_y = pd.Series(labels_list)
+    app.ml_model.train_risk_model(df_X, series_y)
 
     log.info("[Bootstrap] Complete for: %s", app.baseline.all_machines_loaded())
 

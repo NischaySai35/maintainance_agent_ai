@@ -34,7 +34,7 @@ THRESHOLD_ALERT:       float = 40.0
 THRESHOLD_MAINTENANCE: float = 70.0
 
 # Simulation server base URL
-SIM_BASE_URL: str = os.getenv("SIM_BASE_URL", "")
+SIM_BASE_URL: str = os.getenv("SIM_BASE_URL", "http://localhost:3000")
 
 
 class ActionLayer:

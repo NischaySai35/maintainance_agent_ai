@@ -49,11 +49,17 @@ class LLMExplainer:
         if api_key:
             genai.configure(api_key=api_key)
             self.model = genai.GenerativeModel("gemini-2.0-flash")
-            self.llm_enabled = True
+            self.llm_enabled = False # Temporarily disabled to prevent 429 Daily Quota crashes
         else:
             self.model = None
             self.llm_enabled = False
             log.warning("GEMINI_API_KEY not found. Agent War Room will use fallback heuristics.")
+
+        # Rate limiting & caching
+        self.cache: Dict[str, AgentDecision] = {}
+        self.last_call: Dict[str, float] = {}
+        self.COOLDOWN_SECONDS = 15.0  # Only query AI every 15s per machine
+        self.STABILITY_THRESHOLD = 5.0 # If risk changes less than 5%, reuse cache
 
     def reason(
         self,
@@ -72,6 +78,23 @@ class LLMExplainer:
         historian = self._historian_agent(baseline)
         
         # Decide narrative
+        import time
+        now = time.time()
+        last_t = self.last_call.get(machine_id, 0.0)
+        cached = self.cache.get(machine_id)
+        
+        # Logic: Should we reuse the cache?
+        # Reuse if: we just called recently OR risk hasn't moved much
+        use_cache = False
+        if cached and (now - last_t < self.COOLDOWN_SECONDS):
+             # If risk score hasn't jumped significantly, just keep the current AI reasoning
+             risk_diff = abs(risk_score - getattr(cached, '_raw_risk', 0.0))
+             if risk_diff < self.STABILITY_THRESHOLD:
+                use_cache = True
+
+        if use_cache and cached:
+            return cached
+
         if not self.llm_enabled or not piv_result.accepted or risk_score < 40:
             orchestrator, final, expl = self._orchestrator_fallback(
                 machine_id, risk_score, piv_result, anomaly, duration
@@ -82,6 +105,7 @@ class LLMExplainer:
                 sentinel, physicist, historian, orchestrator, final, expl = self._query_gemini_agents(
                     machine_id, risk_score, anomaly, duration, baseline
                 )
+                self.last_call[machine_id] = now
             except Exception as e:
                 log.warning(f"Failed to query Gemini: {e}")
                 orchestrator, final, expl = self._orchestrator_fallback(
@@ -90,7 +114,7 @@ class LLMExplainer:
 
         log.debug(f"[Agent] {machine_id} - Expl: {expl}")
 
-        return AgentDecision(
+        decision = AgentDecision(
             machine_id=machine_id,
             sentinel=sentinel,
             physicist=physicist,
@@ -105,6 +129,10 @@ class LLMExplainer:
                 f"[Orchestrator] {orchestrator}"
             ]
         )
+        # Store for caching (secretly track risk score in the object)
+        setattr(decision, '_raw_risk', risk_score)
+        self.cache[machine_id] = decision
+        return decision
 
     def _sentinel_agent(self, anomaly: AnomalyResult) -> str:
         if not anomaly.anomaly_types:

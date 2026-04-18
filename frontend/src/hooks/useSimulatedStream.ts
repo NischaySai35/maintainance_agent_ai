@@ -43,6 +43,8 @@ interface BackendMachineSnapshot {
   reasoning?: Record<string, string>;
 }
 
+const lastWsTimeRef = { current: 0 };
+
 interface BackendStateResponse {
   timestamp?: string;
   machines?: Record<string, BackendMachineSnapshot>;
@@ -309,6 +311,7 @@ export function useSimulatedStream() {
         setState(prev => ({ ...prev, syntheticMode: true }));
       }
 
+      lastWsTimeRef.current = Date.now();
       updateReading({
         machine_id: machineId,
         timestamp: typeof payload.timestamp === 'string' ? payload.timestamp : undefined,
@@ -363,17 +366,13 @@ export function useSimulatedStream() {
   }, [updateReading]);
 
   useEffect(() => {
-    if (!state.syntheticMode) {
-      syntheticConsoleRef.current = 0;
-      return;
-    }
-
     const tick = () => {
+      // If we are getting live WebSocket updates, don't overlap with synthetic ticks
+      if (Date.now() - (lastWsTimeRef.current || 0) < 2000) {
+        return;
+      }
+      
       setState(prev => {
-        if (!prev.syntheticMode) {
-          return prev;
-        }
-
         const readings = { ...prev.readings };
         const sparklines = { ...prev.sparklines };
         const trendSeries = { ...prev.trendSeries };
@@ -392,43 +391,6 @@ export function useSimulatedStream() {
           const sparkline = sparklines[machine.id] ?? [];
           sparklines[machine.id] = [...sparkline.slice(-19), nextReading.temperature_C];
           trendSeries[machine.id] = appendTrendSeries(trendSeries[machine.id], nextReading);
-
-          if (nextReading.status !== 'shadow' && nextReading.riskScore >= 75) {
-            const recentlyAlerted = alerts.find(
-              alert =>
-                alert.machine_id === machine.id &&
-                alert.type === 'verified' &&
-                Date.now() - new Date(alert.timestamp).getTime() < 30000,
-            );
-
-            if (!recentlyAlerted) {
-              alerts.unshift({
-                id: `synthetic-${machine.id}-${now}`,
-                timestamp: nextReading.timestamp,
-                machine_id: machine.id,
-                issue: `${machine.id} ${nextReading.riskScore >= 90 ? 'critical' : 'elevated'} risk detected`,
-                severity: nextReading.riskScore >= 90 ? 'critical' : 'warning',
-                action: nextReading.riskScore >= 90 ? 'Emergency maintenance scheduled' : 'Inspection flagged in queue',
-                type: 'verified',
-                riskScore: nextReading.riskScore,
-              });
-            }
-          }
-        }
-
-        const agentMessages = [...prev.agentMessages];
-        if (now - syntheticConsoleRef.current > 4000) {
-          const sourceMachine = MACHINES[Math.floor(Math.random() * MACHINES.length)]?.id ?? 'SYSTEM';
-          const sample = readings[sourceMachine] ?? readings[MACHINES[0]?.id ?? ''];
-          if (sample) {
-            agentMessages.push(
-              formatAgentMessage('Sentinel', `${sourceMachine} synthetic pulse ${Math.round(sample.riskScore)}% risk, ${sample.status}${sample.predicted ? ' (predicted)' : ''}`),
-              formatAgentMessage('Physicist', `${sourceMachine} mechanics stable: vibration ${sample.vibration_mm_s.toFixed(2)} mm/s.`),
-              formatAgentMessage('Historian', `${sourceMachine} remains within its rolling baseline pattern.`),
-              formatAgentMessage('Orchestrator', `${sourceMachine} routing synthetic telemetry into the dashboard.`),
-            );
-            syntheticConsoleRef.current = now;
-          }
         }
 
         return {
@@ -436,18 +398,16 @@ export function useSimulatedStream() {
           readings,
           sparklines,
           trendSeries,
-          alerts: alerts.slice(0, 50),
-          agentMessages: agentMessages.slice(-60),
-          surgeDetected: Object.values(readings).filter(item => item.riskScore >= 85).length >= 3,
+          alerts,
+          syntheticMode: true,
+          agentMessages: prev.agentMessages.length > 0 ? prev.agentMessages : generateAgentMessages()
         };
       });
     };
 
-    // Disabled to prevent frontend local simulator from colliding with the backend WebSocket stream
-    // tick();
-    // const id = setInterval(tick, 1000);
-    // return () => clearInterval(id);
-  }, [state.syntheticMode]);
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     const abortController = new AbortController();

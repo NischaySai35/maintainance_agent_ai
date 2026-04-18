@@ -108,4 +108,20 @@ class MLIntelligence:
             risk_score *= 0.1
 
         risk_score = min(100.0, max(0.0, risk_score))
-        return risk_prob, round(risk_score, 2)
+        
+        # Implement Temporal Risk Inertia (climb slowly, fall slowly)
+        prev_risk = self._smoothed_risk.get(machine_id, 0.0)
+        
+        if risk_score > prev_risk:
+            # Climb rate limited to prevent instant 100% on a 2-second glitch
+            smoothed_risk = prev_risk + (risk_score - prev_risk) * 0.25
+        else:
+            # Fall faster than we climb to clear fixes quickly
+            smoothed_risk = prev_risk * 0.8 + risk_score * 0.2
+
+        # Noise Floor: Don't show trace risk if it's effectively zero
+        if smoothed_risk < 10.0:
+            smoothed_risk = 0.0
+
+        self._smoothed_risk[machine_id] = smoothed_risk
+        return risk_prob, round(smoothed_risk, 2)

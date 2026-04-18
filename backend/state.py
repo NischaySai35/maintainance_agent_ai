@@ -21,7 +21,7 @@ from fastapi import WebSocket
 # ---------------------------------------------------------------------------
 MACHINE_IDS: list[str] = ["CNC_01", "CNC_02", "PUMP_03", "CONVEYOR_04"]
 
-SIM_BASE_URL: str = os.getenv("SIM_BASE_URL", "")
+SIM_BASE_URL: str = os.getenv("SIM_BASE_URL", "http://localhost:3000")
 
 MACHINE_TYPE: dict[str, str] = {
     "CNC_01":      "cnc",
